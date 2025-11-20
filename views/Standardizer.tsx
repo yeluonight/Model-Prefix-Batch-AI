@@ -471,7 +471,7 @@ export const Standardizer: React.FC = () => {
                 }} />
                 
                 <div>
-                    <label className="block text-xs font-medium text-secondary uppercase tracking-wider mb-1.5">手动输入 (每行一个)</label>
+                    <label className="block text-xs font-medium text-secondary uppercase tracking-wider mb-1.5">手动输入 (使用逗号隔开)</label>
                     <div className="flex gap-2">
                         <textarea 
                             className="w-full h-24 p-3 bg-subtle border border-border rounded-lg text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent resize-none"
