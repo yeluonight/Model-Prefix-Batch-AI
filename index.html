@@ -72,6 +72,32 @@
         background: #e4e4e7;
         border-radius: 3px;
       }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #d4d4d8;
+      }
+
+      .animate-enter {
+        animation: enter 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      @keyframes enter {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "path": "https://aistudiocdn.com/path@^0.12.7",
+    "vite": "https://aistudiocdn.com/vite@^7.2.2",
+    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1"
+  }
+}
+</script>
+</head>
   <body class="flex items-center justify-center min-h-screen p-4 selection:bg-accent-light selection:text-accent-text">
     <div id="root" class="w-full max-w-5xl"></div>
   <script type="module" src="/index.tsx"></script>
