@@ -56,7 +56,8 @@ const DEFAULT_RULES: ProcessingRule[] = [
 ];
 
 // 全字匹配过滤列表 (不区分大小写)
-const MISC_FILTER_KEYWORDS = ['sonar', 'fp-16', 'text', 'auto', 'fp-8', 'custom'];
+// 已添加: image, top_p, tools
+const MISC_FILTER_KEYWORDS = ['sonar', 'fp-16', 'text', 'auto', 'fp-8', 'custom', 'image', 'top_p', 'tools'];
 
 export const Standardizer: React.FC = () => {
   // State
@@ -181,9 +182,10 @@ export const Standardizer: React.FC = () => {
   };
 
   const isBedrockModel = (name: string) => {
-      // 增强正则：匹配 anthropic.claude, amazon.titan 等 AWS Bedrock 格式
-      // 以及单纯的 model family name
-      return /(^|[\.-])(anthropic|claude|amazon|titan|meta|cohere|command|ai21|jurassic|mistral)/i.test(name);
+      // 修复：不再过滤 'claude' 或 'mistral' 这样的通用名称
+      // 只过滤典型的 Bedrock/Provider 前缀，如 anthropic.claude, amazon.titan 等
+      // 这样可以保留 api.llmgateway.io 返回的 claude-3-sonnet 等干净名称
+      return /(^|[\.-])(anthropic|amazon|titan|meta|cohere|ai21|jurassic)([\.-]|$)/i.test(name);
   };
 
   const isLlamaModel = (name: string) => {
@@ -221,7 +223,7 @@ export const Standardizer: React.FC = () => {
     setFetchStatus('连接中...');
     
     try {
-      // Use direct GET fetch for llmgateway or standard APIs
+      // Use direct GET fetch
       const response = await fetch(urlToFetch, {
           method: 'GET',
           headers: { 'Content-Type': 'application/json' }
@@ -254,9 +256,9 @@ export const Standardizer: React.FC = () => {
                 .sort((a: string, b: string) => b.length - a.length)
                 .join('\n');
         });
-        setFetchStatus(`成功更新字典`);
+        setFetchStatus(`成功更新字典 (新增 ${extractedModels.length} 个)`);
       } else {
-        setFetchStatus('未识别到数据');
+        setFetchStatus('未识别到有效模型数据');
       }
     } catch (error: any) {
       console.error(error);
@@ -541,7 +543,7 @@ export const Standardizer: React.FC = () => {
                         </label>
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                             <input type="checkbox" checked={filterMisc} onChange={(e) => setFilterMisc(e.target.checked)} className="rounded text-accent focus:ring-accent border-gray-300 w-3.5 h-3.5" />
-                            <span className="text-[11px] text-secondary">过滤杂项 (Sonar/Text...)</span>
+                            <span className="text-[11px] text-secondary">过滤杂项 (Image/Tools...)</span>
                         </label>
                     </div>
                 </div>
