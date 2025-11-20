@@ -62,8 +62,13 @@ export const Standardizer: React.FC = () => {
   const [rules, setRules] = useState<ProcessingRule[]>([]);
   const [manualInput, setManualInput] = useState('');
   const [dictionaryInput, setDictionaryInput] = useState('');
+  
+  // Settings
   const [enableSmartMatch, setEnableSmartMatch] = useState(true);
   const [ignoreBedrock, setIgnoreBedrock] = useState(true);
+  const [ignoreLlama, setIgnoreLlama] = useState(true); // Default true as requested
+  const [removeFreeSuffix, setRemoveFreeSuffix] = useState(false);
+  
   const [dictUrl, setDictUrl] = useState(REMOTE_DICT_URL);
   const [loadingDict, setLoadingDict] = useState(false);
   const [fetchStatus, setFetchStatus] = useState('');
@@ -75,13 +80,15 @@ export const Standardizer: React.FC = () => {
     const savedModels = localStorage.getItem('std_models');
     const savedDict = localStorage.getItem('std_dict');
     const savedIgnoreBedrock = localStorage.getItem('std_ignore_bedrock');
+    const savedIgnoreLlama = localStorage.getItem('std_ignore_llama');
+    const savedRemoveFree = localStorage.getItem('std_remove_free');
     
     setRules(savedRules ? JSON.parse(savedRules) : DEFAULT_RULES);
     setModels(savedModels ? JSON.parse(savedModels) : []);
     setDictionaryInput(savedDict || DEFAULT_DICTIONARY);
-    if (savedIgnoreBedrock !== null) {
-        setIgnoreBedrock(savedIgnoreBedrock === 'true');
-    }
+    if (savedIgnoreBedrock !== null) setIgnoreBedrock(savedIgnoreBedrock === 'true');
+    if (savedIgnoreLlama !== null) setIgnoreLlama(savedIgnoreLlama === 'true');
+    if (savedRemoveFree !== null) setRemoveFreeSuffix(savedRemoveFree === 'true');
     
     if (!savedDict) {
       handleFetchRemoteDict(REMOTE_DICT_URL);
@@ -94,7 +101,9 @@ export const Standardizer: React.FC = () => {
     localStorage.setItem('std_models', JSON.stringify(models));
     localStorage.setItem('std_dict', dictionaryInput);
     localStorage.setItem('std_ignore_bedrock', String(ignoreBedrock));
-  }, [rules, models, dictionaryInput, ignoreBedrock]);
+    localStorage.setItem('std_ignore_llama', String(ignoreLlama));
+    localStorage.setItem('std_remove_free', String(removeFreeSuffix));
+  }, [rules, models, dictionaryInput, ignoreBedrock, ignoreLlama, removeFreeSuffix]);
 
   // 深度递归提取器：扫描 JSON 树
   const extractModelNames = (data: any): string[] => {
@@ -172,6 +181,10 @@ export const Standardizer: React.FC = () => {
       return /^(anthropic|amazon|meta|cohere|ai21|mistral)\./i.test(name);
   };
 
+  const isLlamaModel = (name: string) => {
+      return name.toLowerCase().startsWith('llama');
+  };
+
   const handleFetchRemoteDict = async (urlToFetch: string = dictUrl) => {
     if (!urlToFetch) return;
     setLoadingDict(true);
@@ -233,11 +246,11 @@ export const Standardizer: React.FC = () => {
       let extractedModels = extractModelNames(data);
       
       if (ignoreBedrock) {
-          const countBefore = extractedModels.length;
           extractedModels = extractedModels.filter(m => !isBedrockModel(m));
-          if (countBefore > extractedModels.length) {
-              console.log(`Filtered ${countBefore - extractedModels.length} Bedrock models`);
-          }
+      }
+
+      if (ignoreLlama) {
+          extractedModels = extractedModels.filter(m => !isLlamaModel(m));
       }
 
       if (extractedModels.length > 0) {
@@ -301,9 +314,7 @@ export const Standardizer: React.FC = () => {
     const dictList = dictionaryInput.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
     const sortedDict = [...new Set(dictList)].sort((a: string, b: string) => b.length - a.length); 
 
-    // 预处理：生成 Claude 的所有可能变体 (标准化版本号分隔符)
-    // 将 claude-4.5-sonnet 统一转换为 claude-4-5-sonnet (如果字典里是横杠格式)
-    // 反之亦然，或者同时生成用于匹配
+    // 预处理：生成 Claude 的所有可能变体
     const getClaudeVariants = (input: string) => {
         const lower = input.toLowerCase();
         // 匹配 pattern: claude + (name) + (version) 或 claude + (version) + (name)
@@ -342,290 +353,268 @@ export const Standardizer: React.FC = () => {
     };
 
     return models.map(original => {
+      let processedOriginal = original;
+      
+      // 1. 特殊清理：移除 :free 后缀
+      if (removeFreeSuffix) {
+          processedOriginal = processedOriginal.replace(/:free$/i, '');
+      }
+
       if (enableSmartMatch) {
-        const normOriginal = normalize(original);
+        const normOriginal = normalize(processedOriginal);
         
-        // 1. 尝试 Claude 特殊逻辑 (双向匹配)
-        // 无论输入是 claude-sonnet-4.5 还是 claude-4.5-sonnet，都去字典里找匹配项
-        if (original.toLowerCase().includes('claude')) {
-            const variants = getClaudeVariants(original);
+        // 2a. 尝试 Claude 特殊逻辑 (双向匹配)
+        if (processedOriginal.toLowerCase().includes('claude')) {
+            const variants = getClaudeVariants(processedOriginal);
             for (const v of variants) {
                 const normV = normalize(v);
-                // 检查字典里是否有这个变体 (模糊或精确)
                 const exactMatch = sortedDict.find(d => normalize(d) === normV);
                 if (exactMatch) return { original, cleaned: exactMatch, matchSource: 'smart' };
                 
-                // 尝试包含匹配
                 const containsMatch = sortedDict.find(d => normalize(d).includes(normV) || normV.includes(normalize(d)));
                 if (containsMatch) return { original, cleaned: containsMatch, matchSource: 'smart' };
             }
         }
 
-        // 2. 常规智能匹配
+        // 2b. 常规智能匹配
         const match = sortedDict.find((std: string) => {
            const normStd = normalize(std);
            if (normStd.length < 3) return false; 
+           
+           // 核心算法：包含关系
+           // 如果 原始字符串 包含 标准词 (gpt-4o-free -> gpt-4o)
+           // 或者 标准词 包含 原始字符串 (gpt4o -> gpt-4o, fuzzy)
            return normOriginal.includes(normStd);
         });
-        if (match) return { original, cleaned: match, matchSource: 'smart' };
+
+        if (match) {
+          return { original, cleaned: match, matchSource: 'smart' };
+        }
       }
 
-      // 规则匹配兜底
-      let current = original;
-      let matchedSource: 'rule' | 'original' = 'original';
+      // 3. 规则处理 (Fallback)
+      let ruleProcessed = processedOriginal;
       rules.filter(r => r.active).forEach(rule => {
-        const prev = current;
         try {
-          if (rule.type === 'lowercase') current = current.toLowerCase();
-          else if (rule.type === 'remove') current = current.split(rule.target).join('');
-          else if (rule.type === 'replace') current = current.split(rule.target).join(rule.replacement);
-          else if (rule.type === 'regex') current = current.replace(new RegExp(rule.target, 'g'), rule.replacement);
-        } catch (e) {}
-        if (current !== prev) matchedSource = 'rule';
+          if (rule.type === 'replace') {
+            ruleProcessed = ruleProcessed.split(rule.target).join(rule.replacement);
+          } else if (rule.type === 'remove') {
+            ruleProcessed = ruleProcessed.split(rule.target).join('');
+          } else if (rule.type === 'lowercase') {
+            ruleProcessed = ruleProcessed.toLowerCase();
+          } else if (rule.type === 'regex') {
+            const re = new RegExp(rule.target, 'g');
+            ruleProcessed = ruleProcessed.replace(re, rule.replacement);
+          }
+        } catch (e) {
+          console.warn('Rule application failed:', e);
+        }
       });
-      return { original, cleaned: current, matchSource: matchedSource };
-    });
-  }, [models, rules, dictionaryInput, enableSmartMatch]);
 
-  const getProcessedList = () => processedModels.map(m => {
-      const val = m.cleaned;
-      return useQuotes ? `"${val}"` : val;
-  }).join(',');
-  
-  const getProcessedJson = () => {
+      // 如果规则处理后的结果与原始不同，或者被 :free 处理过，都算作改变
+      const isChanged = ruleProcessed !== original;
+      return { 
+          original, 
+          cleaned: ruleProcessed, 
+          matchSource: isChanged ? 'rule' : 'original' 
+      };
+    });
+  }, [models, rules, dictionaryInput, enableSmartMatch, removeFreeSuffix]);
+
+  const getResultJson = () => {
     const obj: Record<string, string> = {};
-    processedModels.forEach(m => obj[m.original] = m.cleaned);
+    processedModels.forEach(m => {
+        obj[m.original] = m.cleaned;
+    });
     return JSON.stringify(obj, null, 2);
   };
 
-  const dictionaryCount = dictionaryInput.split(/[\n,]+/).filter(s => s.trim()).length;
-
   return (
-    <div className="animate-enter space-y-8 max-w-5xl mx-auto">
-      
-      <ApiFetcher onModelsFetched={(newModels) => setModels(prev => [...new Set([...prev, ...newModels])])} />
-
-      {/* Input Area */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden flex flex-col group hover:shadow-md transition-shadow duration-300">
-        <div className="px-6 py-4 border-b border-gray-100 bg-white flex justify-between items-center">
-            <h2 className="text-sm font-semibold text-primary flex items-center gap-2">
-              原始模型列表
-              <span className="px-2 py-0.5 rounded-full bg-gray-100 text-xs font-normal text-secondary">{models.length}</span>
-            </h2>
-            <Button size="sm" variant="danger" onClick={() => setModels([])} disabled={models.length === 0} className="!py-1 !h-7 !text-xs">清空</Button>
-        </div>
-        <div className="grid md:grid-cols-2 h-[200px] divide-x divide-gray-100">
-            <textarea 
-                className="w-full h-full p-5 text-sm font-mono bg-white resize-none focus:outline-none text-primary placeholder-tertiary/70"
-                placeholder="在此粘贴杂乱的模型名 (逗号或换行分隔)...&#10;aws/gpt-4-turbo&#10;google/gemini 2.5 pro"
-                value={manualInput}
-                onChange={e => setManualInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addManualInput())}
-            />
-            <div className="p-4 bg-gray-50/30 overflow-y-auto custom-scrollbar">
-                {models.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-xs text-tertiary/70 italic gap-2">
-                        <svg className="w-8 h-8 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
-                        请输入或通过 API 同步
+    <div className="animate-enter space-y-8 max-w-6xl mx-auto">
+      {/* 1. Input Area */}
+      <div className="grid md:grid-cols-2 gap-8">
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl border border-border shadow-sm p-5 hover:shadow-md transition-shadow duration-300">
+             <h3 className="text-sm font-bold text-secondary uppercase tracking-wider mb-4">1. 数据源</h3>
+             <div className="space-y-4">
+                <ApiFetcher onModelsFetched={(newModels) => {
+                    const unique = newModels.filter(m => !models.includes(m));
+                    setModels(prev => [...prev, ...unique]);
+                }} />
+                
+                <div>
+                    <label className="block text-xs font-medium text-secondary uppercase tracking-wider mb-1.5">手动输入 (每行一个)</label>
+                    <div className="flex gap-2">
+                        <textarea 
+                            className="w-full h-24 p-3 bg-subtle border border-border rounded-lg text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent resize-none"
+                            placeholder="openai/gpt-4o&#10;anthropic.claude-3-sonnet..."
+                            value={manualInput}
+                            onChange={(e) => setManualInput(e.target.value)}
+                        ></textarea>
                     </div>
-                ) : (
-                    <div className="flex flex-wrap gap-2">
-                        {models.map((m, i) => (
-                            <span key={i} className="inline-flex items-center px-2 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-secondary shadow-sm">
-                                <span className="max-w-[150px] truncate">{m}</span>
-                                <button onClick={() => setModels(prev => prev.filter((_, idx) => idx !== i))} className="ml-1.5 text-tertiary hover:text-red-500 transition-colors">×</button>
-                            </span>
-                        ))}
-                    </div>
-                )}
-            </div>
-        </div>
-        <div className="border-t border-gray-100 p-3 bg-gray-50/30 flex justify-end">
-             <Button size="sm" onClick={addManualInput} disabled={!manualInput.trim()} className="!py-1 !h-8">添加输入</Button>
-        </div>
-      </div>
-
-      {/* Configuration Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          
-          {/* Smart Match Config */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col hover:shadow-md transition-shadow duration-300 overflow-hidden">
-             {/* Header */}
-             <div className="px-6 py-4 border-b border-gray-100 bg-white flex flex-col gap-2">
-                <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-3">
-                        <h2 className="text-sm font-semibold text-primary">智能匹配字典</h2>
-                        <span className="px-2 py-0.5 rounded-full bg-gray-100 text-secondary text-[10px] font-medium border border-gray-200">
-                          {dictionaryCount} 条
-                        </span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        <label className="flex items-center cursor-pointer gap-1.5 select-none">
-                             <input type="checkbox" checked={ignoreBedrock} onChange={e => setIgnoreBedrock(e.target.checked)} className="w-3.5 h-3.5 rounded text-indigo-400 focus:ring-indigo-400 border-gray-300" />
-                             <span className="text-[11px] font-medium text-secondary">忽略 AWS Bedrock</span>
-                        </label>
-                        <div className="h-3 w-[1px] bg-gray-200"></div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" checked={enableSmartMatch} onChange={e => setEnableSmartMatch(e.target.checked)} className="sr-only peer"/>
-                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-400"></div>
-                        </label>
+                    <div className="flex justify-between mt-2">
+                        <Button size="sm" variant="ghost" onClick={() => setModels([])} className="text-error-text hover:bg-error-bg">清空列表</Button>
+                        <Button size="sm" onClick={addManualInput}>添加到列表</Button>
                     </div>
                 </div>
-                <div className="text-[11px] text-tertiary flex items-center gap-1.5">
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                  匹配逻辑：支持 Claude 变体 (e.g. 4-5-sonnet &harr; sonnet-4.5)，长词优先
-                </div>
-             </div>
-             
-             <div className="p-3 border-b border-gray-100 bg-white flex gap-2 items-center">
-                <div className="flex-1 relative">
-                   <Input 
-                      placeholder="输入字典 URL..." 
-                      value={dictUrl} 
-                      onChange={e => setDictUrl(e.target.value)} 
-                      className="!py-1.5 !text-xs !h-8 !border-gray-200 focus:!border-accent !pl-2"
-                   />
-                </div>
-                <Button 
-                   size="sm" 
-                   variant="secondary" 
-                   onClick={() => handleFetchRemoteDict(dictUrl)}
-                   isLoading={loadingDict}
-                   className="!py-1 !h-8 text-xs whitespace-nowrap bg-gray-50 border-gray-200"
-                >
-                   {loadingDict ? '同步中' : '同步'}
-                </Button>
-             </div>
-             
-             {fetchStatus && (
-                <div className="px-3 py-1.5 bg-indigo-50/30 text-[10px] text-indigo-600 border-b border-indigo-50 text-center">
-                    {fetchStatus}
-                </div>
-             )}
-
-             <div className="flex-1 bg-gray-50/30 overflow-hidden">
-                <textarea 
-                    className={`w-full h-full p-4 text-xs font-mono resize-none focus:outline-none min-h-[240px] leading-relaxed bg-transparent ${enableSmartMatch ? 'text-secondary' : 'text-tertiary'}`}
-                    value={dictionaryInput}
-                    onChange={e => setDictionaryInput(e.target.value)}
-                    disabled={!enableSmartMatch}
-                    placeholder="输入标准模型名列表..."
-                />
              </div>
           </div>
 
-          {/* Rules Config */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col h-full max-h-[450px] hover:shadow-md transition-shadow duration-300 overflow-hidden">
-             <div className="px-6 py-4 border-b border-gray-100 bg-white flex justify-between items-center">
-                <h2 className="text-sm font-semibold text-primary">手动清洗规则</h2>
-                <Button size="sm" variant="ghost" onClick={addRule} className="!py-0.5 !h-7 text-xs bg-gray-50 hover:bg-gray-100 text-secondary">+ 规则</Button>
-             </div>
-             <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
-                {rules.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-40 text-tertiary gap-2">
-                        <span className="text-xs">暂无规则</span>
-                        <span className="text-[10px] opacity-70">请添加规则或使用智能匹配</span>
-                    </div>
-                ) : (
-                    rules.map((rule, idx) => (
-                        <div key={rule.id} className={`flex items-center gap-2 p-2.5 rounded-lg border transition-all ${rule.active ? 'border-gray-200 bg-white shadow-sm' : 'border-transparent bg-gray-50 opacity-60'}`}>
-                            <input type="checkbox" checked={rule.active} onChange={() => toggleRule(idx)} className="rounded text-accent focus:ring-accent border-gray-300" />
-                            
-                            <select 
-                                value={rule.type} 
-                                onChange={e => updateRule(idx, 'type', e.target.value)}
-                                className="text-xs border border-gray-200 rounded px-1.5 py-1 bg-gray-50 text-secondary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20"
-                            >
-                                <option value="replace">替换</option>
-                                <option value="remove">移除</option>
-                                <option value="regex">正则</option>
-                                <option value="lowercase">小写</option>
-                            </select>
-
-                            {rule.type !== 'lowercase' && (
-                                <>
-                                    <input 
-                                        className="flex-1 w-16 text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 font-mono text-primary placeholder-tertiary"
-                                        value={rule.target}
-                                        onChange={e => updateRule(idx, 'target', e.target.value)}
-                                        placeholder="目标..."
-                                    />
-                                    {rule.type !== 'remove' && (
-                                        <span className="text-tertiary text-[10px]">&rarr;</span>
-                                    )}
-                                    {rule.type !== 'remove' && (
-                                        <input 
-                                            className="flex-1 w-16 text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20 font-mono text-primary placeholder-tertiary"
-                                            value={rule.replacement}
-                                            onChange={e => updateRule(idx, 'replacement', e.target.value)}
-                                            placeholder="新值..."
-                                        />
-                                    )}
-                                </>
-                            )}
-                            <button onClick={() => deleteRule(idx)} className="text-tertiary hover:text-error-text px-1 transition-colors">×</button>
-                        </div>
-                    ))
-                )}
-             </div>
-          </div>
-      </div>
-
-      {/* Preview Table */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow duration-300">
-        <div className="px-6 py-4 border-b border-gray-100 bg-white">
-             <h2 className="text-sm font-semibold text-primary">实时清洗预览</h2>
-        </div>
-        <div className="max-h-[300px] overflow-y-auto custom-scrollbar">
-            <table className="w-full text-sm text-left">
-                <thead className="text-xs text-secondary bg-gray-50/80 sticky top-0 z-10 backdrop-blur-sm">
-                    <tr>
-                        <th className="px-6 py-3 font-medium w-1/3">原始名称</th>
-                        <th className="px-6 py-3 font-medium w-1/3">清洗后名称</th>
-                        <th className="px-6 py-3 font-medium w-24 text-center">来源</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                    {processedModels.length === 0 ? (
-                        <tr>
-                            <td colSpan={3} className="px-6 py-12 text-center text-tertiary text-xs">无数据预览</td>
-                        </tr>
-                    ) : (
-                        processedModels.map((row, i) => (
-                            <tr key={i} className="group hover:bg-gray-50/50 transition-colors">
-                                <td className="px-6 py-3 font-mono text-xs text-secondary truncate max-w-[200px]" title={row.original}>{row.original}</td>
-                                <td className="px-6 py-3 font-mono text-xs text-primary font-medium truncate max-w-[200px]" title={row.cleaned}>
-                                    {row.cleaned}
-                                </td>
-                                <td className="px-6 py-3 text-center">
-                                    {row.matchSource === 'smart' && (
-                                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-indigo-50 text-indigo-600 border border-indigo-100/50">
-                                            智能
-                                        </span>
-                                    )}
-                                    {row.matchSource === 'rule' && (
-                                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-600 border border-amber-100/50">
-                                            规则
-                                        </span>
-                                    )}
-                                    {row.matchSource === 'original' && (
-                                        <span className="text-[10px] text-tertiary opacity-50">-</span>
-                                    )}
-                                </td>
-                            </tr>
-                        ))
+          {/* Rules Panel */}
+          <div className="bg-white rounded-xl border border-border shadow-sm p-5 hover:shadow-md transition-shadow duration-300">
+             <h3 className="text-sm font-bold text-secondary uppercase tracking-wider mb-4">2. 清洗规则</h3>
+             
+             <div className="space-y-3 mb-4">
+                {rules.map((rule, idx) => (
+                  <div key={rule.id} className="flex items-center gap-2 bg-subtle p-2 rounded-lg border border-border">
+                    <input 
+                      type="checkbox" 
+                      checked={rule.active} 
+                      onChange={() => toggleRule(idx)}
+                      className="rounded text-accent focus:ring-accent border-gray-300"
+                    />
+                    <select 
+                      className="bg-transparent text-xs font-medium border-none focus:ring-0 text-primary py-1 pl-1"
+                      value={rule.type}
+                      onChange={(e) => updateRule(idx, 'type', e.target.value)}
+                    >
+                      <option value="replace">替换</option>
+                      <option value="remove">移除</option>
+                      <option value="regex">正则</option>
+                      <option value="lowercase">转小写</option>
+                    </select>
+                    
+                    {rule.type !== 'lowercase' && (
+                        <>
+                            <input 
+                              className="flex-1 w-16 bg-white border border-gray-200 rounded px-2 py-1 text-xs font-mono focus:border-accent focus:outline-none"
+                              placeholder="目标..."
+                              value={rule.target}
+                              onChange={(e) => updateRule(idx, 'target', e.target.value)}
+                            />
+                            <span className="text-tertiary">&rarr;</span>
+                            <input 
+                              className="flex-1 w-16 bg-white border border-gray-200 rounded px-2 py-1 text-xs font-mono focus:border-accent focus:outline-none"
+                              placeholder="替换为..."
+                              value={rule.replacement}
+                              onChange={(e) => updateRule(idx, 'replacement', e.target.value)}
+                            />
+                        </>
                     )}
-                </tbody>
-            </table>
+                    
+                    <button onClick={() => deleteRule(idx)} className="text-tertiary hover:text-error-text p-1">×</button>
+                  </div>
+                ))}
+             </div>
+             <Button size="sm" variant="secondary" onClick={addRule} className="w-full border-dashed">
+                + 添加规则
+             </Button>
+          </div>
+        </div>
+
+        {/* Dictionary & Settings */}
+        <div className="space-y-6">
+           <div className="bg-white rounded-xl border border-border shadow-sm p-5 hover:shadow-md transition-shadow duration-300 h-full flex flex-col">
+              <div className="flex justify-between items-start mb-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-secondary uppercase tracking-wider">3. 智能匹配字典</h3>
+                    <p className="text-[10px] text-tertiary mt-1">系统会自动将左侧混乱的名称匹配到字典中存在的标准名称</p>
+                  </div>
+                  <div className="flex flex-col items-end gap-2">
+                     <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <span className={`text-xs font-medium transition-colors ${enableSmartMatch ? 'text-accent' : 'text-tertiary'}`}>
+                           {enableSmartMatch ? '已启用' : '已禁用'}
+                        </span>
+                        <div className={`relative w-9 h-5 rounded-full transition-colors duration-200 ease-in-out ${enableSmartMatch ? 'bg-accent' : 'bg-gray-200'}`}>
+                           <input 
+                             type="checkbox" 
+                             className="absolute opacity-0 w-full h-full cursor-pointer"
+                             checked={enableSmartMatch}
+                             onChange={(e) => setEnableSmartMatch(e.target.checked)}
+                           />
+                           <span className={`absolute top-0.5 left-0.5 bg-white w-4 h-4 rounded-full shadow-sm transition-transform duration-200 ease-in-out ${enableSmartMatch ? 'translate-x-4' : 'translate-x-0'}`} />
+                        </div>
+                     </label>
+                  </div>
+              </div>
+
+              {/* Filters */}
+              <div className="flex flex-wrap gap-x-4 gap-y-2 mb-4 px-3 py-2 bg-subtle rounded-lg border border-border/50">
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                     <input 
+                        type="checkbox" 
+                        checked={ignoreBedrock} 
+                        onChange={(e) => setIgnoreBedrock(e.target.checked)}
+                        className="rounded text-accent focus:ring-accent border-gray-300 w-3.5 h-3.5"
+                     />
+                     <span className="text-xs text-secondary">过滤 Bedrock</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                     <input 
+                        type="checkbox" 
+                        checked={ignoreLlama} 
+                        onChange={(e) => setIgnoreLlama(e.target.checked)}
+                        className="rounded text-accent focus:ring-accent border-gray-300 w-3.5 h-3.5"
+                     />
+                     <span className="text-xs text-secondary">过滤 Llama</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                     <input 
+                        type="checkbox" 
+                        checked={removeFreeSuffix} 
+                        onChange={(e) => setRemoveFreeSuffix(e.target.checked)}
+                        className="rounded text-accent focus:ring-accent border-gray-300 w-3.5 h-3.5"
+                     />
+                     <span className="text-xs text-secondary">移除 :free</span>
+                  </label>
+              </div>
+
+              <div className="flex gap-2 mb-3">
+                 <Input 
+                    value={dictUrl}
+                    onChange={(e) => setDictUrl(e.target.value)}
+                    placeholder="字典 API URL..."
+                    className="!py-1.5 !text-xs"
+                 />
+                 <Button 
+                    size="sm" 
+                    variant="outline" 
+                    onClick={() => handleFetchRemoteDict()} 
+                    isLoading={loadingDict}
+                    className="whitespace-nowrap"
+                 >
+                    更新
+                 </Button>
+              </div>
+              {fetchStatus && <p className="text-[10px] text-accent mb-2 text-right">{fetchStatus}</p>}
+
+              <textarea 
+                  className={`flex-1 w-full p-3 bg-subtle border border-border rounded-lg text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent resize-none transition-opacity duration-200 ${enableSmartMatch ? 'opacity-100' : 'opacity-50'}`}
+                  value={dictionaryInput}
+                  onChange={(e) => setDictionaryInput(e.target.value)}
+                  disabled={!enableSmartMatch}
+                  placeholder="一行一个标准模型名称..."
+              ></textarea>
+               
+               <div className="mt-3 pt-3 border-t border-border/50">
+                  <div className="text-[11px] text-tertiary flex items-center gap-1.5">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    匹配逻辑：忽略符号 (如 "Gemini 2.5 Pro" &rarr; "gemini-2.5-pro")，长词优先
+                  </div>
+               </div>
+           </div>
         </div>
       </div>
 
-      {/* Final Output */}
-      <div className="grid md:grid-cols-2 gap-6">
-        {/* List Output */}
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden h-[300px] hover:shadow-md transition-shadow duration-300">
-          <div className="px-6 py-3 border-b border-gray-100 bg-white flex justify-between items-center">
-            <h2 className="text-xs font-bold text-secondary uppercase tracking-wider">文本列表</h2>
+      {/* 2. Result Area */}
+      <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden hover:shadow-md transition-shadow duration-300">
+          <div className="px-6 py-4 border-b border-border bg-white flex justify-between items-center">
+            <div className="flex items-center gap-3">
+                <span className="text-sm font-bold text-secondary uppercase tracking-wider">处理结果预览</span>
+                <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 text-xs rounded-full font-medium">
+                    {processedModels.length} 个模型
+                </span>
+            </div>
             <div className="flex items-center gap-4">
                 <label className="flex items-center cursor-pointer select-none gap-2 group">
                     <input 
@@ -634,35 +623,68 @@ export const Standardizer: React.FC = () => {
                         onChange={(e) => setUseQuotes(e.target.checked)}
                         className="w-3.5 h-3.5 rounded text-accent focus:ring-accent border-gray-300"
                     />
-                    <span className="text-[11px] font-medium text-secondary group-hover:text-primary transition-colors">双引号</span>
+                    <span className="text-[11px] font-medium text-secondary group-hover:text-primary transition-colors">保留双引号</span>
                 </label>
-                <div className="h-3 w-[1px] bg-gray-200"></div>
-                <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(getProcessedList())} className="!h-7 !text-xs hover:bg-gray-100">复制</Button>
+                <div className="h-4 w-[1px] bg-gray-200"></div>
+                <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(getResultJson())}>复制 JSON</Button>
             </div>
           </div>
-          <textarea 
-            readOnly
-            className="flex-1 p-5 font-mono text-xs text-primary resize-none focus:outline-none leading-relaxed bg-white"
-            value={models.length > 0 ? getProcessedList() : ''}
-            placeholder="清洗结果..."
-          />
-        </div>
-
-        {/* JSON Output */}
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden h-[300px] hover:shadow-md transition-shadow duration-300">
-          <div className="px-6 py-3 border-b border-gray-100 bg-white flex justify-between items-center">
-             <h2 className="text-xs font-bold text-secondary uppercase tracking-wider">JSON 映射表</h2>
-             <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(getProcessedJson())} className="!h-7 !text-xs hover:bg-gray-100">复制</Button>
+          
+          <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-gray-100 h-[500px]">
+             {/* Table View */}
+             <div className="overflow-y-auto p-0 bg-gray-50/30">
+                <table className="w-full text-left border-collapse">
+                   <thead className="bg-gray-50 sticky top-0 z-10">
+                      <tr>
+                         <th className="px-4 py-3 text-xs font-medium text-tertiary uppercase tracking-wider border-b border-gray-200">原始名称</th>
+                         <th className="px-4 py-3 text-xs font-medium text-tertiary uppercase tracking-wider border-b border-gray-200">处理后</th>
+                         <th className="px-4 py-3 text-xs font-medium text-tertiary uppercase tracking-wider border-b border-gray-200 w-16">来源</th>
+                      </tr>
+                   </thead>
+                   <tbody className="divide-y divide-gray-100">
+                      {processedModels.length === 0 ? (
+                          <tr>
+                              <td colSpan={3} className="px-4 py-12 text-center text-tertiary text-xs italic">
+                                  请在上方添加模型数据...
+                              </td>
+                          </tr>
+                      ) : (
+                          processedModels.map((row, idx) => (
+                             <tr key={idx} className="hover:bg-indigo-50/30 transition-colors group">
+                                <td className="px-4 py-2.5 text-xs font-mono text-secondary truncate max-w-[180px]" title={row.original}>{row.original}</td>
+                                <td className="px-4 py-2.5 text-xs font-mono text-primary font-medium truncate max-w-[180px]">
+                                    {row.original !== row.cleaned ? (
+                                        <span className="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">{row.cleaned}</span>
+                                    ) : (
+                                        <span className="text-gray-400">{row.cleaned}</span>
+                                    )}
+                                </td>
+                                <td className="px-4 py-2.5">
+                                   {row.matchSource === 'smart' && (
+                                     <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">智能</span>
+                                   )}
+                                   {row.matchSource === 'rule' && (
+                                     <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700">规则</span>
+                                   )}
+                                </td>
+                             </tr>
+                          ))
+                      )}
+                   </tbody>
+                </table>
+             </div>
+             
+             {/* JSON View */}
+             <div className="relative bg-white">
+                <textarea 
+                    readOnly
+                    className="w-full h-full p-5 font-mono text-xs text-primary resize-none focus:outline-none leading-relaxed bg-white"
+                    value={processedModels.length > 0 ? getResultJson() : ''}
+                    placeholder="// 最终映射表 JSON 将显示在这里..."
+                />
+             </div>
           </div>
-          <textarea 
-            readOnly
-            className="flex-1 p-5 font-mono text-xs text-primary resize-none focus:outline-none leading-relaxed bg-white whitespace-pre"
-            value={models.length > 0 ? getProcessedJson() : ''}
-            placeholder="{ ... }"
-          />
-        </div>
       </div>
-
     </div>
   );
 };
