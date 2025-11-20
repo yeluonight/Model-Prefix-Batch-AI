@@ -10,7 +10,7 @@ const DEFAULT_DICTIONARY_LIST = [
   "gpt-4-turbo", "gpt-4-turbo-preview", "gpt-4-32k", "gpt-4",
   "gpt-3.5-turbo", "dall-e-3", "whisper-1",
   
-  // Anthropic
+  // Anthropic (Standard format usually: claude-ver-name)
   "claude-3-5-sonnet-20240620", "claude-3-5-sonnet",
   "claude-3-opus-20240229", "claude-3-opus",
   "claude-3-sonnet-20240229", "claude-3-sonnet",
@@ -96,14 +96,13 @@ export const Standardizer: React.FC = () => {
     localStorage.setItem('std_ignore_bedrock', String(ignoreBedrock));
   }, [rules, models, dictionaryInput, ignoreBedrock]);
 
-  // 深度递归提取器：暴力扫描 JSON 树寻找模型名
+  // 深度递归提取器：扫描 JSON 树
   const extractModelNames = (data: any): string[] => {
     const candidates = new Set<string>();
 
-    // 辅助：剥离厂商前缀 (e.g. "google/gemini-pro" -> "gemini-pro")
+    // 辅助：剥离厂商前缀
     const stripPrefix = (str: string) => {
         if (!str) return '';
-        // 如果包含斜杠，取最后一部分。这可以处理 "google/xxx", "models/xxx", "deepseek/xxx" 等所有情况
         if (str.includes('/')) {
             return str.split('/').pop() || str;
         }
@@ -111,50 +110,52 @@ export const Standardizer: React.FC = () => {
     };
 
     // 辅助：判断字符串是否像一个有效的模型 ID
-    // 关键：排除 modelperm-, file-, ft- 等垃圾数据
     const isValidModelName = (str: any) => {
         if (typeof str !== 'string') return false;
         if (str.length < 2) return false;
-        // 排除空格和网址
         if (str.includes(' ') || str.includes('http')) return false;
         
         const lower = str.toLowerCase();
-        // 垃圾前缀过滤
         if (lower.startsWith('modelperm-')) return false;
         if (lower.startsWith('file-')) return false;
-        if (lower.startsWith('ft-')) return false; // fine-tunes
+        if (lower.startsWith('ft-')) return false;
         if (lower.startsWith('system-')) return false;
-        if (lower.includes('curie:') || lower.includes('davinci:') || lower.includes('babbage:')) return false; // 旧版微调格式
+        if (lower.includes('curie:') || lower.includes('davinci:') || lower.includes('babbage:')) return false;
 
         return true;
     };
 
     // 递归遍历函数
     const walk = (node: any) => {
-        if (!node) return;
+        if (!node || typeof node !== 'object') return;
 
-        // Case 1: 纯字符串数组 (e.g. ["gpt-4", "claude-2"])
-        if (Array.isArray(node) && node.every(item => typeof item === 'string')) {
-            node.filter(isValidModelName).forEach(s => candidates.add(stripPrefix(s)));
+        // 1. 过滤规则：舍弃 providerId 为 "llmgateway" 的节点
+        if (node.providerId === 'llmgateway') {
             return;
         }
 
-        if (typeof node === 'object') {
-            // Case 2: 对象中包含常见 ID 字段
-            if (isValidModelName(node.id)) candidates.add(stripPrefix(node.id));
-            if (isValidModelName(node.model_name)) candidates.add(stripPrefix(node.model_name));
-            if (isValidModelName(node.modelName)) candidates.add(stripPrefix(node.modelName));
-            if (isValidModelName(node.modelname)) candidates.add(stripPrefix(node.modelname));
-            
-            // Case 3: 某些 API 可能把 ID 放在 name 字段 (Gemini 常用)
-            if (isValidModelName(node.name)) candidates.add(stripPrefix(node.name));
-
-            // 继续递归
-            if (Array.isArray(node)) {
-                node.forEach(child => walk(child));
-            } else {
-                Object.values(node).forEach(child => walk(child));
+        // 2. 优先获取 modelName 字段
+        let found = false;
+        if (node.modelName && typeof node.modelName === 'string' && isValidModelName(node.modelName)) {
+            candidates.add(stripPrefix(node.modelName));
+            found = true;
+        }
+        // 兼容：如果对象里没有 modelName，但有 id 或 model_name 且不是 llmgateway，也可以尝试提取
+        if (!found) {
+            if (node.id && typeof node.id === 'string' && isValidModelName(node.id)) {
+                candidates.add(stripPrefix(node.id));
+            } else if (node.model_name && typeof node.model_name === 'string' && isValidModelName(node.model_name)) {
+                candidates.add(stripPrefix(node.model_name));
             }
+        }
+
+        // 递归
+        if (Array.isArray(node)) {
+            node.forEach(walk);
+        } else {
+            Object.values(node).forEach(child => {
+                if (typeof child === 'object') walk(child);
+            });
         }
     };
 
@@ -168,7 +169,6 @@ export const Standardizer: React.FC = () => {
   };
 
   const isBedrockModel = (name: string) => {
-      // Bedrock models often look like "anthropic.claude-3..." or "amazon.titan..."
       return /^(anthropic|amazon|meta|cohere|ai21|mistral)\./i.test(name);
   };
 
@@ -179,8 +179,6 @@ export const Standardizer: React.FC = () => {
     
     try {
       let text = '';
-      
-      // 带超时的 Fetch 辅助函数 (5秒超时)
       const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout = 5000) => {
         const controller = new AbortController();
         const id = setTimeout(() => controller.abort(), timeout);
@@ -195,19 +193,16 @@ export const Standardizer: React.FC = () => {
       };
 
       const fetchStrategies = [
-        // 策略1: 直连
         async () => {
             const res = await fetchWithTimeout(urlToFetch);
             if (!res.ok) throw new Error('Direct');
             return await res.text();
         },
-        // 策略2: AllOrigins (比较稳定)
         async () => {
             const res = await fetchWithTimeout(`https://api.allorigins.win/raw?url=${encodeURIComponent(urlToFetch)}`);
             if (!res.ok) throw new Error('AllOrigins');
             return await res.text();
         },
-        // 策略3: CORS Proxy (备选)
         async () => {
             const res = await fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(urlToFetch)}`);
             if (!res.ok) throw new Error('CorsProxy');
@@ -232,14 +227,11 @@ export const Standardizer: React.FC = () => {
       try {
         data = JSON.parse(text);
       } catch {
-        // 如果不是 JSON，尝试按行分割
         data = text.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
       }
 
-      // 使用新的递归提取器 + 去前缀逻辑
       let extractedModels = extractModelNames(data);
       
-      // Filter Bedrock models if enabled
       if (ignoreBedrock) {
           const countBefore = extractedModels.length;
           extractedModels = extractedModels.filter(m => !isBedrockModel(m));
@@ -273,7 +265,6 @@ export const Standardizer: React.FC = () => {
 
   const addManualInput = () => {
     if (!manualInput.trim()) return;
-    // 支持中文逗号
     const newItems = manualInput.split(/[\n,，]+/).map(s => s.trim()).filter(s => s && !models.includes(s));
     setModels(prev => [...prev, ...newItems]);
     setManualInput('');
@@ -308,16 +299,71 @@ export const Standardizer: React.FC = () => {
   const processedModels = useMemo((): ModelMapping[] => {
     const normalize = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
     const dictList = dictionaryInput.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
-    // 按长度倒序，确保长词优先匹配 (e.g. gpt-4-32k 优于 gpt-4)
     const sortedDict = [...new Set(dictList)].sort((a: string, b: string) => b.length - a.length); 
+
+    // 预处理：生成 Claude 的所有可能变体 (标准化版本号分隔符)
+    // 将 claude-4.5-sonnet 统一转换为 claude-4-5-sonnet (如果字典里是横杠格式)
+    // 反之亦然，或者同时生成用于匹配
+    const getClaudeVariants = (input: string) => {
+        const lower = input.toLowerCase();
+        // 匹配 pattern: claude + (name) + (version) 或 claude + (version) + (name)
+        // Version 可能是 3.5, 3-5, 4, 4.5, 4-5
+        const claudeRegex = /claude[^\w]*?(sonnet|haiku|opus)[^\w]*?([\d]+[.\-][\d]+|[\d]+)|claude[^\w]*?([\d]+[.\-][\d]+|[\d]+)[^\w]*?(sonnet|haiku|opus)/i;
+        const match = lower.match(claudeRegex);
+        
+        if (match) {
+            // 提取 name 和 version (不论顺序)
+            const part1 = match[1] || match[3]; // sonnet OR 3.5
+            const part2 = match[2] || match[4]; // 3.5 OR sonnet
+            
+            let type = '';
+            let version = '';
+            
+            if (['sonnet', 'haiku', 'opus'].includes(part1)) {
+                type = part1;
+                version = part2;
+            } else {
+                type = part2;
+                version = part1;
+            }
+            
+            // 统一把版本号里的点换成杠 (3.5 -> 3-5) 以适配大多数 standard key
+            const vDash = version.replace(/\./g, '-');
+            const vDot = version.replace(/-/g, '.');
+            
+            return [
+                `claude-${vDash}-${type}`, // claude-3-5-sonnet
+                `claude-${vDot}-${type}`,  // claude-3.5-sonnet
+                `claude-${type}-${vDash}`, // claude-sonnet-3-5
+                `claude-${type}-${vDot}`   // claude-sonnet-3.5
+            ];
+        }
+        return [];
+    };
 
     return models.map(original => {
       if (enableSmartMatch) {
         const normOriginal = normalize(original);
-        // 智能匹配逻辑：归一化后包含
+        
+        // 1. 尝试 Claude 特殊逻辑 (双向匹配)
+        // 无论输入是 claude-sonnet-4.5 还是 claude-4.5-sonnet，都去字典里找匹配项
+        if (original.toLowerCase().includes('claude')) {
+            const variants = getClaudeVariants(original);
+            for (const v of variants) {
+                const normV = normalize(v);
+                // 检查字典里是否有这个变体 (模糊或精确)
+                const exactMatch = sortedDict.find(d => normalize(d) === normV);
+                if (exactMatch) return { original, cleaned: exactMatch, matchSource: 'smart' };
+                
+                // 尝试包含匹配
+                const containsMatch = sortedDict.find(d => normalize(d).includes(normV) || normV.includes(normalize(d)));
+                if (containsMatch) return { original, cleaned: containsMatch, matchSource: 'smart' };
+            }
+        }
+
+        // 2. 常规智能匹配
         const match = sortedDict.find((std: string) => {
            const normStd = normalize(std);
-           // 避免匹配太短的词造成误判
            if (normStd.length < 3) return false; 
            return normOriginal.includes(normStd);
         });
@@ -359,7 +405,7 @@ export const Standardizer: React.FC = () => {
       
       <ApiFetcher onModelsFetched={(newModels) => setModels(prev => [...new Set([...prev, ...newModels])])} />
 
-      {/* Input Area - Added overflow-hidden */}
+      {/* Input Area */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden flex flex-col group hover:shadow-md transition-shadow duration-300">
         <div className="px-6 py-4 border-b border-gray-100 bg-white flex justify-between items-center">
             <h2 className="text-sm font-semibold text-primary flex items-center gap-2">
@@ -402,35 +448,32 @@ export const Standardizer: React.FC = () => {
       {/* Configuration Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           
-          {/* Smart Match Config - Added overflow-hidden */}
+          {/* Smart Match Config */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col hover:shadow-md transition-shadow duration-300 overflow-hidden">
              {/* Header */}
              <div className="px-6 py-4 border-b border-gray-100 bg-white flex flex-col gap-2">
                 <div className="flex justify-between items-center">
                     <div className="flex items-center gap-3">
                         <h2 className="text-sm font-semibold text-primary">智能匹配字典</h2>
-                        {/* Neutral Badge Color */}
                         <span className="px-2 py-0.5 rounded-full bg-gray-100 text-secondary text-[10px] font-medium border border-gray-200">
                           {dictionaryCount} 条
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
                         <label className="flex items-center cursor-pointer gap-1.5 select-none">
-                             {/* Lighter Indigo Checkbox */}
                              <input type="checkbox" checked={ignoreBedrock} onChange={e => setIgnoreBedrock(e.target.checked)} className="w-3.5 h-3.5 rounded text-indigo-400 focus:ring-indigo-400 border-gray-300" />
                              <span className="text-[11px] font-medium text-secondary">忽略 AWS Bedrock</span>
                         </label>
                         <div className="h-3 w-[1px] bg-gray-200"></div>
                         <label className="relative inline-flex items-center cursor-pointer">
                             <input type="checkbox" checked={enableSmartMatch} onChange={e => setEnableSmartMatch(e.target.checked)} className="sr-only peer"/>
-                            {/* Softened Active Color: indigo-400 */}
                             <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-400"></div>
                         </label>
                     </div>
                 </div>
                 <div className="text-[11px] text-tertiary flex items-center gap-1.5">
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                  匹配逻辑：忽略符号 (如 "Gemini 2.5 Pro" &rarr; "gemini-2.5-pro")，长词优先
+                  匹配逻辑：支持 Claude 变体 (e.g. 4-5-sonnet &harr; sonnet-4.5)，长词优先
                 </div>
              </div>
              
@@ -471,7 +514,7 @@ export const Standardizer: React.FC = () => {
              </div>
           </div>
 
-          {/* Rules Config - Added overflow-hidden */}
+          {/* Rules Config */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col h-full max-h-[450px] hover:shadow-md transition-shadow duration-300 overflow-hidden">
              <div className="px-6 py-4 border-b border-gray-100 bg-white flex justify-between items-center">
                 <h2 className="text-sm font-semibold text-primary">手动清洗规则</h2>
@@ -508,7 +551,7 @@ export const Standardizer: React.FC = () => {
                                         placeholder="目标..."
                                     />
                                     {rule.type !== 'remove' && (
-                                        <span className="text-tertiary text-[10px]">➜</span>
+                                        <span className="text-tertiary text-[10px]">&rarr;</span>
                                     )}
                                     {rule.type !== 'remove' && (
                                         <input 
@@ -528,7 +571,7 @@ export const Standardizer: React.FC = () => {
           </div>
       </div>
 
-      {/* Preview Table - Added overflow-hidden */}
+      {/* Preview Table */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden hover:shadow-md transition-shadow duration-300">
         <div className="px-6 py-4 border-b border-gray-100 bg-white">
              <h2 className="text-sm font-semibold text-primary">实时清洗预览</h2>
