@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ApiFetcher } from '../components/ApiFetcher';
 import { Button } from '../components/ui/Button';
 import { ProcessingRule, ModelMapping } from '../types';
-import { Input } from '../components/ui/Input';
 
 const DEFAULT_DICTIONARY_LIST = [
   // OpenAI
@@ -178,11 +177,14 @@ export const Standardizer: React.FC = () => {
   };
 
   const isBedrockModel = (name: string) => {
-      return /^(anthropic|amazon|meta|cohere|ai21|mistral)\./i.test(name);
+      // 增强正则：不仅匹配前缀，也匹配常见模型族名 (claude, titan, command等)
+      // 使用 (^|[\.-]) 确保匹配单词边界或前缀
+      return /(^|[\.-])(anthropic|claude|amazon|titan|meta|cohere|command|ai21|jurassic|mistral)/i.test(name);
   };
 
   const isLlamaModel = (name: string) => {
-      return name.toLowerCase().startsWith('llama');
+      // 增强正则：匹配 llama 开头或包含 .llama / -llama 的情况
+      return /(^|[\.-])llama/i.test(name);
   };
   
   // 精确全字匹配过滤
@@ -275,8 +277,7 @@ export const Standardizer: React.FC = () => {
                  ...DEFAULT_DICTIONARY_LIST
              ]);
 
-             // 2. 转换为数组并应用过滤
-             // 注意：这里仍然应用过滤，以便更新后的文本框看起来是干净的
+             // 2. 转换为数组并应用过滤 (初始过滤)
              let mergedList = Array.from(allModels);
              mergedList = applyFilters(mergedList);
 
@@ -339,7 +340,6 @@ export const Standardizer: React.FC = () => {
     let rawDictList = dictionaryInput.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
     
     // 关键修复：在内存中对字典进行过滤，用于本次匹配
-    // 这确保了当用户切换过滤开关时，即使文本框内容不变，匹配结果也会立即更新
     rawDictList = applyFilters(rawDictList);
 
     const sortedDict = [...new Set(rawDictList)].sort((a: string, b: string) => b.length - a.length); 
@@ -435,7 +435,6 @@ export const Standardizer: React.FC = () => {
           matchSource: isChanged ? 'rule' : 'original' 
       };
     });
-    // 将所有过滤开关加入依赖项
   }, [models, rules, dictionaryInput, enableSmartMatch, ignoreBedrock, ignoreLlama, filterMisc, removeFreeSuffix]);
 
   const getResultJson = () => {
@@ -446,7 +445,11 @@ export const Standardizer: React.FC = () => {
     return JSON.stringify(obj, null, 2);
   };
 
-  // 计算变更数量
+  const getCleanedList = () => {
+      const unique = Array.from(new Set(processedModels.map(m => m.cleaned)));
+      return unique.map(m => useQuotes ? `"${m}"` : m).join(',');
+  };
+
   const changedCount = processedModels.filter(m => m.original !== m.cleaned).length;
 
   return (
@@ -602,6 +605,8 @@ export const Standardizer: React.FC = () => {
                     {changedCount > 0 && <span className="text-accent ml-1">({changedCount} 变更)</span>}
                 </p>
             </div>
+            
+            {/* Global Output Controls */}
             <div className="flex gap-4">
                 <label className="flex items-center cursor-pointer select-none gap-2 group">
                     <input 
@@ -610,75 +615,86 @@ export const Standardizer: React.FC = () => {
                         onChange={(e) => setUseQuotes(e.target.checked)}
                         className="w-3.5 h-3.5 rounded text-accent focus:ring-accent border-gray-300"
                     />
-                    <span className="text-[11px] font-medium text-secondary group-hover:text-primary transition-colors">双引号 (JSON)</span>
+                    <span className="text-[11px] font-medium text-secondary group-hover:text-primary transition-colors">双引号 (列表/JSON)</span>
                 </label>
-                <Button onClick={() => navigator.clipboard.writeText(getResultJson())}>复制 JSON</Button>
             </div>
          </div>
 
-         <div className="grid md:grid-cols-12 gap-6">
-            {/* Table View */}
-            <div className="md:col-span-8 bg-white rounded-xl border border-border shadow-sm overflow-hidden">
-               <div className="max-h-[500px] overflow-y-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-subtle sticky top-0 z-10">
+         {/* Table View */}
+         <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
+            <div className="max-h-[400px] overflow-y-auto">
+              <table className="w-full text-left border-collapse">
+                <thead className="bg-subtle sticky top-0 z-10">
+                  <tr>
+                    <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-1/2">原始名称</th>
+                    <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-1/2">清洗后名称</th>
+                    <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-[80px]">来源</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {processedModels.length === 0 ? (
                       <tr>
-                        <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-1/2">原始名称</th>
-                        <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-1/2">清洗后名称</th>
-                        <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-[80px]">来源</th>
+                          <td colSpan={3} className="py-8 text-center text-tertiary text-sm italic">
+                              请先在左侧添加数据源...
+                          </td>
                       </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {processedModels.length === 0 ? (
-                          <tr>
-                              <td colSpan={3} className="py-8 text-center text-tertiary text-sm italic">
-                                  请先在左侧添加数据源...
-                              </td>
-                          </tr>
-                      ) : (
-                          processedModels.map((row, idx) => (
-                            <tr key={idx} className="group hover:bg-subtle transition-colors">
-                              <td className="py-2.5 px-4 text-xs font-mono text-secondary break-all">{row.original}</td>
-                              <td className={`py-2.5 px-4 text-xs font-mono font-medium break-all ${
-                                row.original !== row.cleaned ? 'text-accent' : 'text-primary'
-                              }`}>
-                                {row.cleaned}
-                              </td>
-                              <td className="py-2.5 px-4 text-center">
-                                  {row.matchSource === 'smart' && (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-100">
-                                          智能
-                                      </span>
-                                  )}
-                                  {row.matchSource === 'rule' && (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-50 text-orange-700 border border-orange-100">
-                                          规则
-                                      </span>
-                                  )}
-                              </td>
-                            </tr>
-                          ))
-                      )}
-                    </tbody>
-                  </table>
-               </div>
+                  ) : (
+                      processedModels.map((row, idx) => (
+                        <tr key={idx} className="group hover:bg-subtle transition-colors">
+                          <td className="py-2.5 px-4 text-xs font-mono text-secondary break-all">{row.original}</td>
+                          <td className={`py-2.5 px-4 text-xs font-mono font-medium break-all ${
+                            row.original !== row.cleaned ? 'text-accent' : 'text-primary'
+                          }`}>
+                            {row.cleaned}
+                          </td>
+                          <td className="py-2.5 px-4 text-center">
+                              {row.matchSource === 'smart' && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-100">
+                                      智能
+                                  </span>
+                              )}
+                              {row.matchSource === 'rule' && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-50 text-orange-700 border border-orange-100">
+                                      规则
+                                  </span>
+                              )}
+                          </td>
+                        </tr>
+                      ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+         </div>
+
+         {/* Output Areas: Text List & JSON */}
+         <div className="grid md:grid-cols-2 gap-6">
+            {/* Text List Output */}
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden h-[300px] hover:shadow-md transition-shadow duration-300">
+              <div className="px-6 py-3 border-b border-gray-100 bg-white flex justify-between items-center">
+                <span className="text-xs font-bold text-secondary uppercase tracking-wider">清洗后列表 (去重)</span>
+                <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(getCleanedList())} className="!h-7 !text-xs hover:bg-gray-100">复制</Button>
+              </div>
+              <textarea 
+                readOnly
+                className="flex-1 p-5 font-mono text-xs text-primary resize-none focus:outline-none leading-relaxed bg-white"
+                value={processedModels.length > 0 ? getCleanedList() : ''}
+                placeholder="结果..."
+              />
             </div>
 
-            {/* JSON View */}
-            <div className="md:col-span-4 bg-primary rounded-xl shadow-lg overflow-hidden flex flex-col h-[500px]">
-               <div className="bg-gray-800 px-4 py-2 flex items-center gap-2 border-b border-gray-700">
-                  <div className="flex gap-1.5">
-                     <div className="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
-                     <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
-                     <div className="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
-                  </div>
-                  <span className="text-[10px] text-gray-400 font-mono ml-2">output.json</span>
-               </div>
-               <textarea 
-                  readOnly
-                  className="flex-1 w-full p-4 bg-transparent text-gray-300 font-mono text-xs resize-none focus:outline-none leading-relaxed custom-scrollbar"
-                  value={getResultJson()}
-               />
+            {/* JSON Output */}
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden h-[300px] hover:shadow-md transition-shadow duration-300">
+              <div className="px-6 py-3 border-b border-gray-100 bg-white flex justify-between items-center">
+                 <span className="text-xs font-bold text-secondary uppercase tracking-wider">JSON 映射表</span>
+                 <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(getResultJson())} className="!h-7 !text-xs hover:bg-gray-100">复制</Button>
+              </div>
+              <textarea 
+                readOnly
+                className="flex-1 p-5 font-mono text-xs text-primary resize-none focus:outline-none leading-relaxed bg-white whitespace-pre"
+                value={processedModels.length > 0 ? getResultJson() : ''}
+                placeholder="{ ... }"
+              />
             </div>
          </div>
       </div>
