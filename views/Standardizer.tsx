@@ -9,7 +9,7 @@ const DEFAULT_DICTIONARY_LIST = [
   "gpt-4-turbo", "gpt-4-turbo-preview", "gpt-4-32k", "gpt-4",
   "gpt-3.5-turbo", "dall-e-3", "whisper-1",
   
-  // Anthropic (Standard format usually: claude-ver-name)
+  // Anthropic
   "claude-3-5-sonnet-20240620", "claude-3-5-sonnet",
   "claude-3-opus-20240229", "claude-3-opus",
   "claude-3-sonnet-20240229", "claude-3-sonnet",
@@ -71,6 +71,7 @@ export const Standardizer: React.FC = () => {
   const [ignoreLlama, setIgnoreLlama] = useState(true);
   const [removeFreeSuffix, setRemoveFreeSuffix] = useState(false);
   const [filterMisc, setFilterMisc] = useState(true);
+  const [showFilteredDict, setShowFilteredDict] = useState(false); // Toggle between Raw and Effective dict
   
   const [dictUrl, setDictUrl] = useState(REMOTE_DICT_URL);
   const [loadingDict, setLoadingDict] = useState(false);
@@ -95,6 +96,7 @@ export const Standardizer: React.FC = () => {
     if (savedRemoveFree !== null) setRemoveFreeSuffix(savedRemoveFree === 'true');
     if (savedFilterMisc !== null) setFilterMisc(savedFilterMisc === 'true');
     
+    // Auto fetch if empty
     if (!savedDict) {
       handleFetchRemoteDict(REMOTE_DICT_URL);
     }
@@ -111,7 +113,6 @@ export const Standardizer: React.FC = () => {
     localStorage.setItem('std_filter_misc', String(filterMisc));
   }, [rules, models, dictionaryInput, ignoreBedrock, ignoreLlama, removeFreeSuffix, filterMisc]);
 
-  // 深度递归提取器：扫描 JSON 树
   const extractModelNames = (data: any): string[] => {
     const candidates = new Set<string>();
 
@@ -141,18 +142,21 @@ export const Standardizer: React.FC = () => {
     const walk = (node: any) => {
         if (!node || typeof node !== 'object') return;
 
+        // Skip Gateway internal IDs if possible, but usually we want the `id` field
         if (node.providerId === 'llmgateway') {
-            return;
+           // Keep going, might be inside
         }
 
         let found = false;
-        if (node.modelName && typeof node.modelName === 'string' && isValidModelName(node.modelName)) {
-            candidates.add(stripPrefix(node.modelName));
+        if (node.id && typeof node.id === 'string' && isValidModelName(node.id)) {
+            candidates.add(stripPrefix(node.id));
             found = true;
         }
+        
+        // Fallback properties
         if (!found) {
-            if (node.id && typeof node.id === 'string' && isValidModelName(node.id)) {
-                candidates.add(stripPrefix(node.id));
+             if (node.modelName && typeof node.modelName === 'string' && isValidModelName(node.modelName)) {
+                candidates.add(stripPrefix(node.modelName));
             } else if (node.model_name && typeof node.model_name === 'string' && isValidModelName(node.model_name)) {
                 candidates.add(stripPrefix(node.model_name));
             }
@@ -177,22 +181,19 @@ export const Standardizer: React.FC = () => {
   };
 
   const isBedrockModel = (name: string) => {
-      // 增强正则：不仅匹配前缀，也匹配常见模型族名 (claude, titan, command等)
-      // 使用 (^|[\.-]) 确保匹配单词边界或前缀
+      // 增强正则：匹配 anthropic.claude, amazon.titan 等 AWS Bedrock 格式
+      // 以及单纯的 model family name
       return /(^|[\.-])(anthropic|claude|amazon|titan|meta|cohere|command|ai21|jurassic|mistral)/i.test(name);
   };
 
   const isLlamaModel = (name: string) => {
-      // 增强正则：匹配 llama 开头或包含 .llama / -llama 的情况
       return /(^|[\.-])llama/i.test(name);
   };
   
-  // 精确全字匹配过滤
   const isMiscModel = (name: string) => {
-      return MISC_FILTER_KEYWORDS.includes(name.toLowerCase());
+      return MISC_FILTER_KEYWORDS.some(k => name.toLowerCase().includes(k));
   };
 
-  // 过滤逻辑封装
   const applyFilters = (list: string[]) => {
       let filtered = [...list];
       if (ignoreBedrock) {
@@ -207,61 +208,33 @@ export const Standardizer: React.FC = () => {
       return filtered;
   };
 
+  // Calculate effective dictionary for display
+  const filteredDictionaryText = useMemo(() => {
+    const rawList = dictionaryInput.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
+    const effectiveList = applyFilters(rawList);
+    return effectiveList.join('\n');
+  }, [dictionaryInput, ignoreBedrock, ignoreLlama, filterMisc]);
+
   const handleFetchRemoteDict = async (urlToFetch: string = dictUrl) => {
     if (!urlToFetch) return;
     setLoadingDict(true);
     setFetchStatus('连接中...');
     
     try {
-      let text = '';
-      const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout = 5000) => {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), timeout);
-        try {
-          const response = await fetch(url, { ...options, signal: controller.signal });
-          clearTimeout(id);
-          return response;
-        } catch (e) {
-          clearTimeout(id);
-          throw e;
-        }
-      };
+      // Use direct GET fetch for llmgateway or standard APIs
+      const response = await fetch(urlToFetch, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' }
+      });
 
-      const fetchStrategies = [
-        async () => {
-            const res = await fetchWithTimeout(urlToFetch);
-            if (!res.ok) throw new Error('Direct');
-            return await res.text();
-        },
-        async () => {
-            const res = await fetchWithTimeout(`https://api.allorigins.win/raw?url=${encodeURIComponent(urlToFetch)}`);
-            if (!res.ok) throw new Error('AllOrigins');
-            return await res.text();
-        },
-        async () => {
-            const res = await fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(urlToFetch)}`);
-            if (!res.ok) throw new Error('CorsProxy');
-            return await res.text();
-        }
-      ];
-
-      let success = false;
-      for (const strategy of fetchStrategies) {
-        try {
-            text = await strategy();
-            if (text && text.length > 0) {
-                success = true;
-                break;
-            }
-        } catch (e) {}
-      }
-
-      if (!success) throw new Error('All strategies failed');
-
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      
+      const text = await response.text();
       let data;
       try {
         data = JSON.parse(text);
       } catch {
+        // Fallback to text list if not JSON
         data = text.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
       }
 
@@ -269,7 +242,6 @@ export const Standardizer: React.FC = () => {
       
       if (extractedModels.length > 0) {
         setDictionaryInput(prev => {
-             // 1. 合并现有、新获取的和默认的
              const currentList = prev.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
              const allModels = new Set([
                  ...currentList,
@@ -277,25 +249,20 @@ export const Standardizer: React.FC = () => {
                  ...DEFAULT_DICTIONARY_LIST
              ]);
 
-             // 2. 转换为数组并应用过滤 (初始过滤)
-             let mergedList = Array.from(allModels);
-             mergedList = applyFilters(mergedList);
-
-             // 3. 排序并返回
-             return mergedList
+             // Sort by length descending (longest match first)
+             return Array.from(allModels)
                 .sort((a: string, b: string) => b.length - a.length)
                 .join('\n');
         });
         setFetchStatus(`成功更新字典`);
-        setTimeout(() => setFetchStatus(''), 3000);
       } else {
         setFetchStatus('未识别到数据');
-        setTimeout(() => setFetchStatus(''), 3000);
       }
     } catch (error: any) {
-      setFetchStatus('同步超时或失败');
-      setTimeout(() => setFetchStatus(''), 3000);
+      console.error(error);
+      setFetchStatus('获取失败: ' + error.message);
     } finally {
+      setTimeout(() => setFetchStatus(''), 3000);
       setLoadingDict(false);
     }
   };
@@ -336,12 +303,9 @@ export const Standardizer: React.FC = () => {
   const processedModels = useMemo((): ModelMapping[] => {
     const normalize = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
     
-    // 获取当前文本框中的字典
+    // Build effective dictionary for matching
     let rawDictList = dictionaryInput.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
-    
-    // 关键修复：在内存中对字典进行过滤，用于本次匹配
     rawDictList = applyFilters(rawDictList);
-
     const sortedDict = [...new Set(rawDictList)].sort((a: string, b: string) => b.length - a.length); 
 
     const getClaudeVariants = (input: string) => {
@@ -540,11 +504,13 @@ export const Standardizer: React.FC = () => {
         <div className="bg-white rounded-xl border border-border shadow-sm p-5 flex flex-col hover:shadow-md transition-shadow duration-300">
              <div className="flex justify-between items-center mb-4">
                 <h3 className="text-sm font-bold text-secondary uppercase tracking-wider">3. 标准字典 (智能匹配)</h3>
-                <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" checked={enableSmartMatch} onChange={(e) => setEnableSmartMatch(e.target.checked)} className="sr-only peer" />
-                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/30 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
-                    <span className="ml-2 text-xs font-medium text-primary">启用</span>
-                </label>
+                <div className="flex items-center gap-3">
+                   <label className="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" checked={enableSmartMatch} onChange={(e) => setEnableSmartMatch(e.target.checked)} className="sr-only peer" />
+                        <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/30 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+                        <span className="ml-2 text-xs font-medium text-primary">启用</span>
+                    </label>
+                </div>
              </div>
              
              <div className="space-y-4 flex-1 flex flex-col">
@@ -580,16 +546,41 @@ export const Standardizer: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="flex-1 relative min-h-[200px]">
+                <div className="flex-1 relative min-h-[200px] flex flex-col">
+                    <div className="flex justify-end mb-1">
+                        <button 
+                           onClick={() => setShowFilteredDict(!showFilteredDict)}
+                           className="text-[10px] text-accent hover:text-accent-hover font-medium transition-colors flex items-center gap-1"
+                        >
+                           {showFilteredDict ? (
+                               <>
+                                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                                   返回编辑
+                               </>
+                           ) : (
+                               <>
+                                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                   预览过滤效果
+                               </>
+                           )}
+                        </button>
+                    </div>
                     <textarea 
-                        className="absolute inset-0 w-full h-full p-3 bg-subtle border border-border rounded-lg text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent resize-none leading-relaxed"
-                        value={dictionaryInput}
-                        onChange={(e) => setDictionaryInput(e.target.value)}
+                        className={`flex-1 w-full p-3 border rounded-lg text-xs font-mono focus:outline-none resize-none leading-relaxed transition-colors ${
+                            showFilteredDict 
+                                ? 'bg-indigo-50/50 border-indigo-100 text-primary' 
+                                : 'bg-subtle border-border focus:ring-1 focus:ring-accent'
+                        }`}
+                        value={showFilteredDict ? filteredDictionaryText : dictionaryInput}
+                        onChange={showFilteredDict ? undefined : (e) => setDictionaryInput(e.target.value)}
+                        readOnly={showFilteredDict}
                         placeholder="标准模型名称列表..."
                     />
                 </div>
                 <p className="text-[10px] text-tertiary">
-                  匹配逻辑：忽略符号 (如 "Gemini 2.5 Pro" &rarr; "gemini-2.5-pro")，长词优先
+                  {showFilteredDict 
+                    ? '正在预览经过过滤规则处理后的字典，实际匹配将使用此列表。' 
+                    : '上方为原始字典。勾选上方过滤选项会实时影响匹配逻辑，点击“预览”可查看实际生效的列表。'}
                 </p>
              </div>
         </div>
@@ -604,19 +595,6 @@ export const Standardizer: React.FC = () => {
                     共 {processedModels.length} 个模型 
                     {changedCount > 0 && <span className="text-accent ml-1">({changedCount} 变更)</span>}
                 </p>
-            </div>
-            
-            {/* Global Output Controls */}
-            <div className="flex gap-4">
-                <label className="flex items-center cursor-pointer select-none gap-2 group">
-                    <input 
-                        type="checkbox" 
-                        checked={useQuotes} 
-                        onChange={(e) => setUseQuotes(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded text-accent focus:ring-accent border-gray-300"
-                    />
-                    <span className="text-[11px] font-medium text-secondary group-hover:text-primary transition-colors">双引号 (列表/JSON)</span>
-                </label>
             </div>
          </div>
 
@@ -672,8 +650,20 @@ export const Standardizer: React.FC = () => {
             {/* Text List Output */}
             <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden h-[300px] hover:shadow-md transition-shadow duration-300">
               <div className="px-6 py-3 border-b border-gray-100 bg-white flex justify-between items-center">
-                <span className="text-xs font-bold text-secondary uppercase tracking-wider">清洗后列表 (去重)</span>
-                <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(getCleanedList())} className="!h-7 !text-xs hover:bg-gray-100">复制</Button>
+                <span className="text-xs font-bold text-secondary uppercase tracking-wider">文本列表</span>
+                <div className="flex items-center gap-4">
+                    <label className="flex items-center cursor-pointer select-none gap-2 group">
+                        <input 
+                            type="checkbox" 
+                            checked={useQuotes} 
+                            onChange={(e) => setUseQuotes(e.target.checked)}
+                            className="w-3.5 h-3.5 rounded text-accent focus:ring-accent border-gray-300"
+                        />
+                        <span className="text-[11px] font-medium text-secondary group-hover:text-primary transition-colors">双引号</span>
+                    </label>
+                    <div className="h-3 w-[1px] bg-gray-200"></div>
+                    <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(getCleanedList())} className="!h-7 !text-xs hover:bg-gray-100">复制</Button>
+                </div>
               </div>
               <textarea 
                 readOnly
