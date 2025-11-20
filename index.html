@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>模型名称清洗工坊</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 引入高质量字体: Inter (UI) & JetBrains Mono (Code) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+            colors: {
+              // 极简主义黑白灰阶
+              surface: '#ffffff',
+              subtle: '#f9fafb', // zinc-50
+              border: '#e4e4e7', // zinc-200
+              
+              // 文字层级
+              primary: '#18181b', // zinc-900
+              secondary: '#71717a', // zinc-500
+              tertiary: '#a1a1aa', // zinc-400
+
+              // 强调色：克制的靛蓝
+              accent: {
+                DEFAULT: '#4f46e5', // indigo-600
+                hover: '#4338ca', // indigo-700
+                light: '#e0e7ff', // indigo-100
+                text: '#3730a3', // indigo-800
+              },
+              
+              // 功能色
+              success: { bg: '#dcfce7', text: '#166534' }, // green-100/700
+              warning: { bg: '#fef9c3', text: '#854d0e' }, // yellow-100/700
+              error: { bg: '#fee2e2', text: '#991b1b' },   // red-100/700
+            },
+            boxShadow: {
+              'soft': '0 2px 10px rgba(0, 0, 0, 0.03)',
+              'float': '0 10px 30px -10px rgba(0, 0, 0, 0.08)',
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+        background-color: #f4f4f5; /* zinc-100 */
+        color: #18181b;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      /* 极简滚动条 */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #e4e4e7;
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #d4d4d8;
+      }
+
+      .animate-enter {
+        animation: enter 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      @keyframes enter {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "path": "https://aistudiocdn.com/path@^0.12.7",
+    "vite": "https://aistudiocdn.com/vite@^7.2.2",
+    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body class="flex items-center justify-center min-h-screen p-4 selection:bg-accent-light selection:text-accent-text">
+    <div id="root" class="w-full max-w-5xl"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

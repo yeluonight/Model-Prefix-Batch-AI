@@ -1,0 +1,5 @@
+{
+  "name": "Model-Prefix-Batch-New-APi",
+  "description": "A powerful utility to manage, prefix, and standardize LLM model names for API gateways.",
+  "requestFramePermissions": []
+}
