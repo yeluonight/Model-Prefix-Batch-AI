@@ -56,6 +56,9 @@ const DEFAULT_RULES: ProcessingRule[] = [
   { id: '3', type: 'lowercase', target: '', replacement: '', active: true },
 ];
 
+// 全字匹配过滤列表 (不区分大小写)
+const MISC_FILTER_KEYWORDS = ['sonar', 'fp-16', 'text', 'auto', 'fp-8', 'custom'];
+
 export const Standardizer: React.FC = () => {
   // State
   const [models, setModels] = useState<string[]>([]);
@@ -66,8 +69,9 @@ export const Standardizer: React.FC = () => {
   // Settings
   const [enableSmartMatch, setEnableSmartMatch] = useState(true);
   const [ignoreBedrock, setIgnoreBedrock] = useState(true);
-  const [ignoreLlama, setIgnoreLlama] = useState(true); // Default true as requested
+  const [ignoreLlama, setIgnoreLlama] = useState(true);
   const [removeFreeSuffix, setRemoveFreeSuffix] = useState(false);
+  const [filterMisc, setFilterMisc] = useState(true); // 新增杂项过滤
   
   const [dictUrl, setDictUrl] = useState(REMOTE_DICT_URL);
   const [loadingDict, setLoadingDict] = useState(false);
@@ -82,6 +86,7 @@ export const Standardizer: React.FC = () => {
     const savedIgnoreBedrock = localStorage.getItem('std_ignore_bedrock');
     const savedIgnoreLlama = localStorage.getItem('std_ignore_llama');
     const savedRemoveFree = localStorage.getItem('std_remove_free');
+    const savedFilterMisc = localStorage.getItem('std_filter_misc');
     
     setRules(savedRules ? JSON.parse(savedRules) : DEFAULT_RULES);
     setModels(savedModels ? JSON.parse(savedModels) : []);
@@ -89,6 +94,7 @@ export const Standardizer: React.FC = () => {
     if (savedIgnoreBedrock !== null) setIgnoreBedrock(savedIgnoreBedrock === 'true');
     if (savedIgnoreLlama !== null) setIgnoreLlama(savedIgnoreLlama === 'true');
     if (savedRemoveFree !== null) setRemoveFreeSuffix(savedRemoveFree === 'true');
+    if (savedFilterMisc !== null) setFilterMisc(savedFilterMisc === 'true');
     
     if (!savedDict) {
       handleFetchRemoteDict(REMOTE_DICT_URL);
@@ -103,13 +109,13 @@ export const Standardizer: React.FC = () => {
     localStorage.setItem('std_ignore_bedrock', String(ignoreBedrock));
     localStorage.setItem('std_ignore_llama', String(ignoreLlama));
     localStorage.setItem('std_remove_free', String(removeFreeSuffix));
-  }, [rules, models, dictionaryInput, ignoreBedrock, ignoreLlama, removeFreeSuffix]);
+    localStorage.setItem('std_filter_misc', String(filterMisc));
+  }, [rules, models, dictionaryInput, ignoreBedrock, ignoreLlama, removeFreeSuffix, filterMisc]);
 
   // 深度递归提取器：扫描 JSON 树
   const extractModelNames = (data: any): string[] => {
     const candidates = new Set<string>();
 
-    // 辅助：剥离厂商前缀
     const stripPrefix = (str: string) => {
         if (!str) return '';
         if (str.includes('/')) {
@@ -118,7 +124,6 @@ export const Standardizer: React.FC = () => {
         return str;
     };
 
-    // 辅助：判断字符串是否像一个有效的模型 ID
     const isValidModelName = (str: any) => {
         if (typeof str !== 'string') return false;
         if (str.length < 2) return false;
@@ -134,22 +139,18 @@ export const Standardizer: React.FC = () => {
         return true;
     };
 
-    // 递归遍历函数
     const walk = (node: any) => {
         if (!node || typeof node !== 'object') return;
 
-        // 1. 过滤规则：舍弃 providerId 为 "llmgateway" 的节点
         if (node.providerId === 'llmgateway') {
             return;
         }
 
-        // 2. 优先获取 modelName 字段
         let found = false;
         if (node.modelName && typeof node.modelName === 'string' && isValidModelName(node.modelName)) {
             candidates.add(stripPrefix(node.modelName));
             found = true;
         }
-        // 兼容：如果对象里没有 modelName，但有 id 或 model_name 且不是 llmgateway，也可以尝试提取
         if (!found) {
             if (node.id && typeof node.id === 'string' && isValidModelName(node.id)) {
                 candidates.add(stripPrefix(node.id));
@@ -158,7 +159,6 @@ export const Standardizer: React.FC = () => {
             }
         }
 
-        // 递归
         if (Array.isArray(node)) {
             node.forEach(walk);
         } else {
@@ -183,6 +183,11 @@ export const Standardizer: React.FC = () => {
 
   const isLlamaModel = (name: string) => {
       return name.toLowerCase().startsWith('llama');
+  };
+  
+  // 精确全字匹配过滤
+  const isMiscModel = (name: string) => {
+      return MISC_FILTER_KEYWORDS.includes(name.toLowerCase());
   };
 
   const handleFetchRemoteDict = async (urlToFetch: string = dictUrl) => {
@@ -247,7 +252,7 @@ export const Standardizer: React.FC = () => {
       
       if (extractedModels.length > 0) {
         setDictionaryInput(prev => {
-             // 1. 合并现有、新获取的和默认的
+             // 1. 合并现有、新获取的和默认的 (创建一个大集合)
              const currentList = prev.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
              const allModels = new Set([
                  ...currentList,
@@ -258,13 +263,17 @@ export const Standardizer: React.FC = () => {
              // 2. 转换为数组
              let mergedList = Array.from(allModels);
 
-             // 3. 统一应用过滤规则 (关键修改：对所有数据进行清洗)
+             // 3. 统一应用过滤规则 (对合并后的全量数据进行清洗)
              if (ignoreBedrock) {
                  mergedList = mergedList.filter(m => !isBedrockModel(m));
              }
 
              if (ignoreLlama) {
                  mergedList = mergedList.filter(m => !isLlamaModel(m));
+             }
+             
+             if (filterMisc) {
+                 mergedList = mergedList.filter(m => !isMiscModel(m));
              }
 
              // 4. 排序并返回
@@ -324,18 +333,14 @@ export const Standardizer: React.FC = () => {
     const dictList = dictionaryInput.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
     const sortedDict = [...new Set(dictList)].sort((a: string, b: string) => b.length - a.length); 
 
-    // 预处理：生成 Claude 的所有可能变体
     const getClaudeVariants = (input: string) => {
         const lower = input.toLowerCase();
-        // 匹配 pattern: claude + (name) + (version) 或 claude + (version) + (name)
-        // Version 可能是 3.5, 3-5, 4, 4.5, 4-5
         const claudeRegex = /claude[^\w]*?(sonnet|haiku|opus)[^\w]*?([\d]+[.\-][\d]+|[\d]+)|claude[^\w]*?([\d]+[.\-][\d]+|[\d]+)[^\w]*?(sonnet|haiku|opus)/i;
         const match = lower.match(claudeRegex);
         
         if (match) {
-            // 提取 name 和 version (不论顺序)
-            const part1 = match[1] || match[3]; // sonnet OR 3.5
-            const part2 = match[2] || match[4]; // 3.5 OR sonnet
+            const part1 = match[1] || match[3];
+            const part2 = match[2] || match[4];
             
             let type = '';
             let version = '';
@@ -348,15 +353,14 @@ export const Standardizer: React.FC = () => {
                 version = part1;
             }
             
-            // 统一把版本号里的点换成杠 (3.5 -> 3-5) 以适配大多数 standard key
             const vDash = version.replace(/\./g, '-');
             const vDot = version.replace(/-/g, '.');
             
             return [
-                `claude-${vDash}-${type}`, // claude-3-5-sonnet
-                `claude-${vDot}-${type}`,  // claude-3.5-sonnet
-                `claude-${type}-${vDash}`, // claude-sonnet-3-5
-                `claude-${type}-${vDot}`   // claude-sonnet-3.5
+                `claude-${vDash}-${type}`, 
+                `claude-${vDot}-${type}`,
+                `claude-${type}-${vDash}`, 
+                `claude-${type}-${vDot}`
             ];
         }
         return [];
@@ -365,7 +369,6 @@ export const Standardizer: React.FC = () => {
     return models.map(original => {
       let processedOriginal = original;
       
-      // 1. 特殊清理：移除 :free 后缀
       if (removeFreeSuffix) {
           processedOriginal = processedOriginal.replace(/:free$/i, '');
       }
@@ -373,7 +376,6 @@ export const Standardizer: React.FC = () => {
       if (enableSmartMatch) {
         const normOriginal = normalize(processedOriginal);
         
-        // 2a. 尝试 Claude 特殊逻辑 (双向匹配)
         if (processedOriginal.toLowerCase().includes('claude')) {
             const variants = getClaudeVariants(processedOriginal);
             for (const v of variants) {
@@ -386,14 +388,9 @@ export const Standardizer: React.FC = () => {
             }
         }
 
-        // 2b. 常规智能匹配
         const match = sortedDict.find((std: string) => {
            const normStd = normalize(std);
            if (normStd.length < 3) return false; 
-           
-           // 核心算法：包含关系
-           // 如果 原始字符串 包含 标准词 (gpt-4o-free -> gpt-4o)
-           // 或者 标准词 包含 原始字符串 (gpt4o -> gpt-4o, fuzzy)
            return normOriginal.includes(normStd);
         });
 
@@ -402,7 +399,6 @@ export const Standardizer: React.FC = () => {
         }
       }
 
-      // 3. 规则处理 (Fallback)
       let ruleProcessed = processedOriginal;
       rules.filter(r => r.active).forEach(rule => {
         try {
@@ -421,7 +417,6 @@ export const Standardizer: React.FC = () => {
         }
       });
 
-      // 如果规则处理后的结果与原始不同，或者被 :free 处理过，都算作改变
       const isChanged = ruleProcessed !== original;
       return { 
           original, 
@@ -438,6 +433,9 @@ export const Standardizer: React.FC = () => {
     });
     return JSON.stringify(obj, null, 2);
   };
+
+  // 计算变更数量
+  const changedCount = processedModels.filter(m => m.original !== m.cleaned).length;
 
   return (
     <div className="animate-enter space-y-8 max-w-6xl mx-auto">
@@ -571,6 +569,15 @@ export const Standardizer: React.FC = () => {
                   <label className="flex items-center gap-1.5 cursor-pointer select-none">
                      <input 
                         type="checkbox" 
+                        checked={filterMisc} 
+                        onChange={(e) => setFilterMisc(e.target.checked)}
+                        className="rounded text-accent focus:ring-accent border-gray-300 w-3.5 h-3.5"
+                     />
+                     <span className="text-xs text-secondary">过滤杂项 (Sonar/fp16)</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                     <input 
+                        type="checkbox" 
                         checked={removeFreeSuffix} 
                         onChange={(e) => setRemoveFreeSuffix(e.target.checked)}
                         className="rounded text-accent focus:ring-accent border-gray-300 w-3.5 h-3.5"
@@ -623,6 +630,7 @@ export const Standardizer: React.FC = () => {
                 <span className="text-sm font-bold text-secondary uppercase tracking-wider">处理结果预览</span>
                 <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 text-xs rounded-full font-medium">
                     {processedModels.length} 个模型
+                    {changedCount > 0 && <span className="text-indigo-500/70 ml-1">({changedCount} 变更)</span>}
                 </span>
             </div>
             <div className="flex items-center gap-4">
