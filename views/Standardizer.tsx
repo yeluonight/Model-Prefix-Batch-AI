@@ -223,10 +223,10 @@ export const Standardizer: React.FC = () => {
     setFetchStatus('连接中...');
     
     try {
-      // Use direct GET fetch
+      // Use direct GET fetch without custom headers to avoid CORS preflight issues
       const response = await fetch(urlToFetch, {
           method: 'GET',
-          headers: { 'Content-Type': 'application/json' }
+          // headers: { 'Content-Type': 'application/json' } // REMOVED: Causes CORS errors on simple GETs
       });
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -262,9 +262,10 @@ export const Standardizer: React.FC = () => {
       }
     } catch (error: any) {
       console.error(error);
-      setFetchStatus('获取失败: ' + error.message);
+      const msg = error.message === 'Failed to fetch' ? '跨域网络错误 (CORS) 或连接失败' : error.message;
+      setFetchStatus('获取失败: ' + msg);
     } finally {
-      setTimeout(() => setFetchStatus(''), 3000);
+      setTimeout(() => setFetchStatus(''), 4000);
       setLoadingDict(false);
     }
   };
