@@ -223,12 +223,14 @@ export const Standardizer: React.FC = () => {
     setFetchStatus('连接中...');
     
     try {
-      // 使用最基础的 GET 请求，不携带任何自定义 header，
-      // 也不携带 cookies (credentials: 'omit')，
-      // 以最大程度避免触发 CORS 预检 (Preflight OPTIONS) 失败。
+      // Standard GET request.
+      // Not setting 'credentials: omit' allows the browser to use its default behavior.
+      // 'Accept' header tells the server we want JSON.
       const response = await fetch(targetUrl, {
           method: 'GET',
-          credentials: 'omit', 
+          headers: {
+              'Accept': 'application/json'
+          }
       });
 
       if (!response.ok) {
@@ -268,9 +270,9 @@ export const Standardizer: React.FC = () => {
       console.error(error);
       let msg = error.message;
       if (msg === 'Failed to fetch' || msg.includes('Load failed')) {
-          msg = '网络错误 (CORS限制或地址错误)';
+          msg = '请求被浏览器阻止 (CORS 或网络错误)';
       }
-      setFetchStatus('获取失败: ' + msg);
+      setFetchStatus('错误: ' + msg);
     } finally {
       setTimeout(() => setFetchStatus(''), 5000);
       setLoadingDict(false);
@@ -536,7 +538,7 @@ export const Standardizer: React.FC = () => {
                            <Button size="sm" onClick={() => handleFetchRemoteDict()} isLoading={loadingDict}>更新</Button>
                         </div>
                     </div>
-                    {fetchStatus && <p className="text-[10px] text-secondary text-right">{fetchStatus}</p>}
+                    {fetchStatus && <p className={`text-[10px] text-right ${fetchStatus.includes('错误') ? 'text-error-text' : 'text-secondary'}`}>{fetchStatus}</p>}
                     
                     <div className="grid grid-cols-2 gap-2">
                         <label className="flex items-center gap-2 cursor-pointer select-none">
