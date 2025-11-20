@@ -215,22 +215,36 @@ export const Standardizer: React.FC = () => {
     if (!urlToFetch) return;
     
     let targetUrl = urlToFetch.trim();
+    
+    // Ensure Protocol
     if (!targetUrl.startsWith('http')) {
         targetUrl = `https://${targetUrl}`;
+    }
+
+    // Smart append path if only domain is provided
+    // Logic: If URL doesn't end in /models and doesn't have a path, append /v1/models
+    try {
+        const urlObj = new URL(targetUrl);
+        if (urlObj.pathname === '/' || urlObj.pathname === '') {
+            targetUrl = targetUrl.replace(/\/$/, '') + '/v1/models';
+            // Update input to reflect the smart change
+            setDictUrl(targetUrl);
+        }
+    } catch (e) {
+        // invalid url, let fetch fail naturally
     }
 
     setLoadingDict(true);
     setFetchStatus('连接中...');
     
     try {
-      // Standard GET request.
-      // Not setting 'credentials: omit' allows the browser to use its default behavior.
-      // 'Accept' header tells the server we want JSON.
+      // 极致简化请求：
+      // 1. method: GET
+      // 2. credentials: omit (不发送 Cookie，避免触发严格 CORS)
+      // 3. NO HEADERS (甚至不加 Accept, 避免触发 Preflight OPTIONS)
       const response = await fetch(targetUrl, {
           method: 'GET',
-          headers: {
-              'Accept': 'application/json'
-          }
+          credentials: 'omit'
       });
 
       if (!response.ok) {
@@ -264,17 +278,18 @@ export const Standardizer: React.FC = () => {
         });
         setFetchStatus(`成功更新字典 (新增 ${extractedModels.length} 个)`);
       } else {
-        setFetchStatus('未识别到有效模型数据');
+        setFetchStatus('连接成功，但未识别到模型数据');
       }
     } catch (error: any) {
-      console.error(error);
+      console.error("Dictionary fetch error:", error);
       let msg = error.message;
+      // 更详细的错误提示
       if (msg === 'Failed to fetch' || msg.includes('Load failed')) {
-          msg = '请求被浏览器阻止 (CORS 或网络错误)';
+          msg = `请求失败。这通常是因为目标服务器 (${targetUrl}) 不允许浏览器直接访问(CORS)，或者地址错误。`;
       }
       setFetchStatus('错误: ' + msg);
     } finally {
-      setTimeout(() => setFetchStatus(''), 5000);
+      setTimeout(() => setFetchStatus(''), 8000);
       setLoadingDict(false);
     }
   };
@@ -533,12 +548,12 @@ export const Standardizer: React.FC = () => {
                               className="flex-1 bg-white border border-border text-xs rounded px-2 py-1.5 focus:outline-none focus:border-accent"
                               value={dictUrl}
                               onChange={(e) => setDictUrl(e.target.value)}
-                              placeholder="字典 URL"
+                              placeholder="字典 URL (如 https://api.llmgateway.io)"
                            />
                            <Button size="sm" onClick={() => handleFetchRemoteDict()} isLoading={loadingDict}>更新</Button>
                         </div>
                     </div>
-                    {fetchStatus && <p className={`text-[10px] text-right ${fetchStatus.includes('错误') ? 'text-error-text' : 'text-secondary'}`}>{fetchStatus}</p>}
+                    {fetchStatus && <p className={`text-[10px] text-right ${fetchStatus.includes('错误') || fetchStatus.includes('失败') ? 'text-error-text' : 'text-secondary'}`}>{fetchStatus}</p>}
                     
                     <div className="grid grid-cols-2 gap-2">
                         <label className="flex items-center gap-2 cursor-pointer select-none">
