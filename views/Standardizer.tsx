@@ -222,36 +222,52 @@ export const Standardizer: React.FC = () => {
     }
 
     // Smart append path if only domain is provided
-    // Logic: If URL doesn't end in /models and doesn't have a path, append /v1/models
     try {
         const urlObj = new URL(targetUrl);
         if (urlObj.pathname === '/' || urlObj.pathname === '') {
             targetUrl = targetUrl.replace(/\/$/, '') + '/v1/models';
-            // Update input to reflect the smart change
-            setDictUrl(targetUrl);
         }
+        
+        // Add required query parameters
+        // include_deactivated? string, exclude_deprecated? string
+        if (!targetUrl.includes('?')) {
+             targetUrl += '?include_deactivated=true&exclude_deprecated=true';
+        }
+        
+        setDictUrl(targetUrl);
     } catch (e) {
-        // invalid url, let fetch fail naturally
+        // invalid url
     }
 
     setLoadingDict(true);
     setFetchStatus('连接中...');
     
-    try {
-      // 极致简化请求：
-      // 1. method: GET
-      // 2. credentials: omit (不发送 Cookie，避免触发严格 CORS)
-      // 3. NO HEADERS (甚至不加 Accept, 避免触发 Preflight OPTIONS)
-      const response = await fetch(targetUrl, {
-          method: 'GET',
-          credentials: 'omit'
-      });
+    const performFetch = async (url: string, useProxy = false) => {
+        const fetchUrl = useProxy 
+            ? `https://corsproxy.io/?${encodeURIComponent(url)}` 
+            : url;
+            
+        const response = await fetch(fetchUrl, {
+            method: 'GET',
+        });
 
-      if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        return await response.text();
+    };
+
+    try {
+      let text = '';
+      try {
+          // 1. 尝试直连
+          text = await performFetch(targetUrl, false);
+      } catch (directError) {
+          console.warn("Direct fetch failed, trying proxy...", directError);
+          // 2. 直连失败，尝试使用 CORS 代理 (解决浏览器跨域限制)
+          text = await performFetch(targetUrl, true);
       }
-      
-      const text = await response.text();
+
       let data;
       try {
         data = JSON.parse(text);
@@ -271,7 +287,6 @@ export const Standardizer: React.FC = () => {
                  ...DEFAULT_DICTIONARY_LIST
              ]);
 
-             // Sort by length descending (longest match first)
              return Array.from(allModels)
                 .sort((a: string, b: string) => b.length - a.length)
                 .join('\n');
@@ -283,9 +298,8 @@ export const Standardizer: React.FC = () => {
     } catch (error: any) {
       console.error("Dictionary fetch error:", error);
       let msg = error.message;
-      // 更详细的错误提示
-      if (msg === 'Failed to fetch' || msg.includes('Load failed')) {
-          msg = `请求失败。这通常是因为目标服务器 (${targetUrl}) 不允许浏览器直接访问(CORS)，或者地址错误。`;
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+          msg = '无法连接到服务器 (跨域限制已尝试代理绕过，但仍失败)';
       }
       setFetchStatus('错误: ' + msg);
     } finally {
