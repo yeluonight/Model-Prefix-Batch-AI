@@ -243,26 +243,36 @@ export const Standardizer: React.FC = () => {
         data = text.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
       }
 
-      let extractedModels = extractModelNames(data);
+      const extractedModels = extractModelNames(data);
       
-      if (ignoreBedrock) {
-          extractedModels = extractedModels.filter(m => !isBedrockModel(m));
-      }
-
-      if (ignoreLlama) {
-          extractedModels = extractedModels.filter(m => !isLlamaModel(m));
-      }
-
       if (extractedModels.length > 0) {
         setDictionaryInput(prev => {
-             const currentSet = new Set(prev.split(/[\n,]+/).map(s => s.trim()).filter(s => s));
-             extractedModels.forEach(m => currentSet.add(m));
-             DEFAULT_DICTIONARY_LIST.forEach(m => currentSet.add(m));
-             return Array.from(currentSet)
+             // 1. 合并现有、新获取的和默认的
+             const currentList = prev.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
+             const allModels = new Set([
+                 ...currentList,
+                 ...extractedModels,
+                 ...DEFAULT_DICTIONARY_LIST
+             ]);
+
+             // 2. 转换为数组
+             let mergedList = Array.from(allModels);
+
+             // 3. 统一应用过滤规则 (关键修改：对所有数据进行清洗)
+             if (ignoreBedrock) {
+                 mergedList = mergedList.filter(m => !isBedrockModel(m));
+             }
+
+             if (ignoreLlama) {
+                 mergedList = mergedList.filter(m => !isLlamaModel(m));
+             }
+
+             // 4. 排序并返回
+             return mergedList
                 .sort((a: string, b: string) => b.length - a.length)
                 .join('\n');
         });
-        setFetchStatus(`成功同步 ${extractedModels.length} 个`);
+        setFetchStatus(`成功更新字典`);
         setTimeout(() => setFetchStatus(''), 3000);
       } else {
         setFetchStatus('未识别到数据');
