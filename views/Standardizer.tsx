@@ -96,11 +96,6 @@ export const Standardizer: React.FC = () => {
     if (savedIgnoreLlama !== null) setIgnoreLlama(savedIgnoreLlama === 'true');
     if (savedRemoveFree !== null) setRemoveFreeSuffix(savedRemoveFree === 'true');
     if (savedFilterMisc !== null) setFilterMisc(savedFilterMisc === 'true');
-    
-    // Auto fetch if empty
-    if (!savedDict) {
-      handleFetchRemoteDict(REMOTE_DICT_URL);
-    }
   }, []);
 
   // Lifecycle: Save to Local Storage
@@ -184,7 +179,6 @@ export const Standardizer: React.FC = () => {
   const isBedrockModel = (name: string) => {
       // 修复：不再过滤 'claude' 或 'mistral' 这样的通用名称
       // 只过滤典型的 Bedrock/Provider 前缀，如 anthropic.claude, amazon.titan 等
-      // 这样可以保留 api.llmgateway.io 返回的 claude-3-sonnet 等干净名称
       return /(^|[\.-])(anthropic|amazon|titan|meta|cohere|ai21|jurassic)([\.-]|$)/i.test(name);
   };
 
@@ -219,17 +213,27 @@ export const Standardizer: React.FC = () => {
 
   const handleFetchRemoteDict = async (urlToFetch: string = dictUrl) => {
     if (!urlToFetch) return;
+    
+    let targetUrl = urlToFetch.trim();
+    if (!targetUrl.startsWith('http')) {
+        targetUrl = `https://${targetUrl}`;
+    }
+
     setLoadingDict(true);
     setFetchStatus('连接中...');
     
     try {
-      // Use direct GET fetch without custom headers to avoid CORS preflight issues
-      const response = await fetch(urlToFetch, {
+      // 使用最基础的 GET 请求，不携带任何自定义 header，
+      // 也不携带 cookies (credentials: 'omit')，
+      // 以最大程度避免触发 CORS 预检 (Preflight OPTIONS) 失败。
+      const response = await fetch(targetUrl, {
           method: 'GET',
-          // headers: { 'Content-Type': 'application/json' } // REMOVED: Causes CORS errors on simple GETs
+          credentials: 'omit', 
       });
 
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
       
       const text = await response.text();
       let data;
@@ -262,10 +266,13 @@ export const Standardizer: React.FC = () => {
       }
     } catch (error: any) {
       console.error(error);
-      const msg = error.message === 'Failed to fetch' ? '跨域网络错误 (CORS) 或连接失败' : error.message;
+      let msg = error.message;
+      if (msg === 'Failed to fetch' || msg.includes('Load failed')) {
+          msg = '网络错误 (CORS限制或地址错误)';
+      }
       setFetchStatus('获取失败: ' + msg);
     } finally {
-      setTimeout(() => setFetchStatus(''), 4000);
+      setTimeout(() => setFetchStatus(''), 5000);
       setLoadingDict(false);
     }
   };
@@ -518,14 +525,16 @@ export const Standardizer: React.FC = () => {
              
              <div className="space-y-4 flex-1 flex flex-col">
                 <div className="bg-subtle p-3 rounded-lg border border-border/50 space-y-3">
-                    <div className="flex items-center gap-2">
-                        <input 
-                           className="flex-1 bg-white border border-border text-xs rounded px-2 py-1.5 focus:outline-none focus:border-accent"
-                           value={dictUrl}
-                           onChange={(e) => setDictUrl(e.target.value)}
-                           placeholder="远程字典 URL"
-                        />
-                        <Button size="sm" onClick={() => handleFetchRemoteDict()} isLoading={loadingDict}>更新</Button>
+                    <div className="flex flex-col gap-2">
+                        <div className="flex gap-2">
+                           <input 
+                              className="flex-1 bg-white border border-border text-xs rounded px-2 py-1.5 focus:outline-none focus:border-accent"
+                              value={dictUrl}
+                              onChange={(e) => setDictUrl(e.target.value)}
+                              placeholder="字典 URL"
+                           />
+                           <Button size="sm" onClick={() => handleFetchRemoteDict()} isLoading={loadingDict}>更新</Button>
+                        </div>
                     </div>
                     {fetchStatus && <p className="text-[10px] text-secondary text-right">{fetchStatus}</p>}
                     
