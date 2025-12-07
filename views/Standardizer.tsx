@@ -65,6 +65,12 @@ export const Standardizer: React.FC = () => {
   const [rules, setRules] = useState<ProcessingRule[]>([]);
   const [manualInput, setManualInput] = useState('');
   const [dictionaryInput, setDictionaryInput] = useState('');
+
+  // 手动覆盖状态：{ original: userEditedCleaned }
+  const [manualOverrides, setManualOverrides] = useState<Record<string, string>>({});
+  // 当前正在编辑的行
+  const [editingRow, setEditingRow] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState('');
   
   // Settings
   const [enableSmartMatch, setEnableSmartMatch] = useState(true);
@@ -88,7 +94,8 @@ export const Standardizer: React.FC = () => {
     const savedIgnoreLlama = localStorage.getItem('std_ignore_llama');
     const savedRemoveFree = localStorage.getItem('std_remove_free');
     const savedFilterMisc = localStorage.getItem('std_filter_misc');
-    
+    const savedOverrides = localStorage.getItem('std_manual_overrides');
+
     setRules(savedRules ? JSON.parse(savedRules) : DEFAULT_RULES);
     setModels(savedModels ? JSON.parse(savedModels) : []);
     setDictionaryInput(savedDict || DEFAULT_DICTIONARY);
@@ -96,6 +103,7 @@ export const Standardizer: React.FC = () => {
     if (savedIgnoreLlama !== null) setIgnoreLlama(savedIgnoreLlama === 'true');
     if (savedRemoveFree !== null) setRemoveFreeSuffix(savedRemoveFree === 'true');
     if (savedFilterMisc !== null) setFilterMisc(savedFilterMisc === 'true');
+    if (savedOverrides) setManualOverrides(JSON.parse(savedOverrides));
   }, []);
 
   // Lifecycle: Save to Local Storage
@@ -107,7 +115,8 @@ export const Standardizer: React.FC = () => {
     localStorage.setItem('std_ignore_llama', String(ignoreLlama));
     localStorage.setItem('std_remove_free', String(removeFreeSuffix));
     localStorage.setItem('std_filter_misc', String(filterMisc));
-  }, [rules, models, dictionaryInput, ignoreBedrock, ignoreLlama, removeFreeSuffix, filterMisc]);
+    localStorage.setItem('std_manual_overrides', JSON.stringify(manualOverrides));
+  }, [rules, models, dictionaryInput, ignoreBedrock, ignoreLlama, removeFreeSuffix, filterMisc, manualOverrides]);
 
   const extractModelNames = (data: any): string[] => {
     const candidates = new Set<string>();
@@ -341,26 +350,27 @@ export const Standardizer: React.FC = () => {
     setRules(newRules);
   };
 
-  const processedModels = useMemo((): ModelMapping[] => {
+  // 自动计算的模型映射（不含手动覆盖）
+  const autoProcessedModels = useMemo((): Omit<ModelMapping, 'hasConflict' | 'conflictGroup'>[] => {
     const normalize = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
-    
+
     // Build effective dictionary for matching
     let rawDictList = dictionaryInput.split(/[\n,]+/).map(s => s.trim()).filter(s => s);
     rawDictList = applyFilters(rawDictList);
-    const sortedDict = [...new Set(rawDictList)].sort((a: string, b: string) => b.length - a.length); 
+    const sortedDict = Array.from(new Set<string>(rawDictList)).sort((a, b) => b.length - a.length);
 
     const getClaudeVariants = (input: string) => {
         const lower = input.toLowerCase();
-        const claudeRegex = /claude[^\w]*?(sonnet|haiku|opus)[^\w]*?([\d]+[.\-][\d]+|[\d]+)|claude[^\w]*?([\d]+[.\-][\d]+|[\d]+)[^\w]*?(sonnet|haiku|opus)/i;
+        const claudeRegex = /claude[^\w]*?(sonnet|haiku|opus)[^\w]*([\d]+[.\-][\d]+|[\d]+)|claude[^\w]*([\d]+[.\-][\d]+|[\d]+)[^\w]*?(sonnet|haiku|opus)/i;
         const match = lower.match(claudeRegex);
-        
+
         if (match) {
             const part1 = match[1] || match[3];
             const part2 = match[2] || match[4];
-            
+
             let type = '';
             let version = '';
-            
+
             if (['sonnet', 'haiku', 'opus'].includes(part1)) {
                 type = part1;
                 version = part2;
@@ -368,14 +378,14 @@ export const Standardizer: React.FC = () => {
                 type = part2;
                 version = part1;
             }
-            
+
             const vDash = version.replace(/\./g, '-');
             const vDot = version.replace(/-/g, '.');
-            
+
             return [
-                `claude-${vDash}-${type}`, 
+                `claude-${vDash}-${type}`,
                 `claude-${vDot}-${type}`,
-                `claude-${type}-${vDash}`, 
+                `claude-${type}-${vDash}`,
                 `claude-${type}-${vDot}`
             ];
         }
@@ -384,34 +394,34 @@ export const Standardizer: React.FC = () => {
 
     return models.map(original => {
       let processedOriginal = original;
-      
+
       if (removeFreeSuffix) {
           processedOriginal = processedOriginal.replace(/:free$/i, '');
       }
 
       if (enableSmartMatch) {
         const normOriginal = normalize(processedOriginal);
-        
+
         if (processedOriginal.toLowerCase().includes('claude')) {
             const variants = getClaudeVariants(processedOriginal);
             for (const v of variants) {
                 const normV = normalize(v);
                 const exactMatch = sortedDict.find(d => normalize(d) === normV);
-                if (exactMatch) return { original, cleaned: exactMatch, matchSource: 'smart' };
-                
+                if (exactMatch) return { original, cleaned: exactMatch, matchSource: 'smart' as const };
+
                 const containsMatch = sortedDict.find(d => normalize(d).includes(normV) || normV.includes(normalize(d)));
-                if (containsMatch) return { original, cleaned: containsMatch, matchSource: 'smart' };
+                if (containsMatch) return { original, cleaned: containsMatch, matchSource: 'smart' as const };
             }
         }
 
         const match = sortedDict.find((std: string) => {
            const normStd = normalize(std);
-           if (normStd.length < 3) return false; 
+           if (normStd.length < 3) return false;
            return normOriginal.includes(normStd);
         });
 
         if (match) {
-          return { original, cleaned: match, matchSource: 'smart' };
+          return { original, cleaned: match, matchSource: 'smart' as const };
         }
       }
 
@@ -434,18 +444,67 @@ export const Standardizer: React.FC = () => {
       });
 
       const isChanged = ruleProcessed !== original;
-      return { 
-          original, 
-          cleaned: ruleProcessed, 
-          matchSource: isChanged ? 'rule' : 'original' 
+      return {
+          original,
+          cleaned: ruleProcessed,
+          matchSource: isChanged ? 'rule' as const : 'original' as const
       };
     });
   }, [models, rules, dictionaryInput, enableSmartMatch, ignoreBedrock, ignoreLlama, filterMisc, removeFreeSuffix]);
 
+  // 最终处理结果：整合手动覆盖 + 冲突检测
+  const processedModels = useMemo((): ModelMapping[] => {
+    // 1. 应用手动覆盖
+    const withOverrides = autoProcessedModels.map(item => {
+      if (manualOverrides[item.original] !== undefined) {
+        return {
+          ...item,
+          cleaned: manualOverrides[item.original],
+          matchSource: 'manual' as const
+        };
+      }
+      return item;
+    });
+
+    // 2. 检测冲突：找出映射到同一个 cleaned 的多个 original
+    const cleanedToOriginals = new Map<string, string[]>();
+    withOverrides.forEach(item => {
+      const existing = cleanedToOriginals.get(item.cleaned) || [];
+      existing.push(item.original);
+      cleanedToOriginals.set(item.cleaned, existing);
+    });
+
+    // 3. 标记冲突
+    return withOverrides.map(item => {
+      const conflictGroup = cleanedToOriginals.get(item.cleaned) || [];
+      const hasConflict = conflictGroup.length > 1;
+      return {
+        ...item,
+        hasConflict,
+        conflictGroup: hasConflict ? conflictGroup.filter(o => o !== item.original) : undefined
+      };
+    });
+  }, [autoProcessedModels, manualOverrides]);
+
+  // 冲突统计
+  const conflictStats = useMemo(() => {
+    const conflictedCleanedNames = new Set<string>();
+    processedModels.forEach(m => {
+      if (m.hasConflict) {
+        conflictedCleanedNames.add(m.cleaned);
+      }
+    });
+    return {
+      conflictGroupCount: conflictedCleanedNames.size,
+      conflictedModelCount: processedModels.filter(m => m.hasConflict).length
+    };
+  }, [processedModels]);
+
   const getResultJson = () => {
     const obj: Record<string, string> = {};
     processedModels.forEach(m => {
-        obj[m.original] = m.cleaned;
+        // 标准名 -> 原始名 (如果有重复的标准名，后面的会覆盖前面的)
+        obj[m.cleaned] = m.original;
     });
     return JSON.stringify(obj, null, 2);
   };
@@ -456,6 +515,49 @@ export const Standardizer: React.FC = () => {
   };
 
   const changedCount = processedModels.filter(m => m.original !== m.cleaned).length;
+
+  // 编辑处理函数
+  const startEditing = (original: string, currentCleaned: string) => {
+    setEditingRow(original);
+    setEditingValue(currentCleaned);
+  };
+
+  const cancelEditing = () => {
+    setEditingRow(null);
+    setEditingValue('');
+  };
+
+  const saveEditing = () => {
+    if (editingRow && editingValue.trim()) {
+      setManualOverrides(prev => ({
+        ...prev,
+        [editingRow]: editingValue.trim()
+      }));
+    }
+    cancelEditing();
+  };
+
+  const clearOverride = (original: string) => {
+    setManualOverrides(prev => {
+      const updated = { ...prev };
+      delete updated[original];
+      return updated;
+    });
+  };
+
+  const clearAllOverrides = () => {
+    setManualOverrides({});
+  };
+
+  // 处理键盘事件
+  const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveEditing();
+    } else if (e.key === 'Escape') {
+      cancelEditing();
+    }
+  };
 
   return (
     <div className="animate-enter space-y-8 max-w-6xl mx-auto">
@@ -631,14 +733,39 @@ export const Standardizer: React.FC = () => {
 
       {/* 2. Result Preview */}
       <div className="space-y-6 border-t border-border pt-8">
+         {/* 冲突警告栏 */}
+         {conflictStats.conflictGroupCount > 0 && (
+           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-start gap-3">
+             <svg className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+             </svg>
+             <div className="flex-1">
+               <p className="text-sm font-medium text-amber-800">
+                 检测到 {conflictStats.conflictGroupCount} 组映射冲突
+               </p>
+               <p className="text-xs text-amber-700 mt-1">
+                 共 {conflictStats.conflictedModelCount} 个模型映射到了相同的清洗后名称。请点击表格中的清洗后名称进行手动编辑以解决冲突。
+               </p>
+             </div>
+           </div>
+         )}
+
          <div className="flex justify-between items-end">
             <div>
                 <h3 className="text-sm font-bold text-secondary uppercase tracking-wider">处理结果预览</h3>
                 <p className="text-xs text-tertiary mt-1">
-                    共 {processedModels.length} 个模型 
+                    共 {processedModels.length} 个模型
                     {changedCount > 0 && <span className="text-accent ml-1">({changedCount} 变更)</span>}
+                    {Object.keys(manualOverrides).length > 0 && (
+                      <span className="text-purple-600 ml-1">({Object.keys(manualOverrides).length} 手动编辑)</span>
+                    )}
                 </p>
             </div>
+            {Object.keys(manualOverrides).length > 0 && (
+              <Button size="sm" variant="ghost" onClick={clearAllOverrides} className="text-error-text hover:bg-error-bg">
+                清除所有手动编辑
+              </Button>
+            )}
          </div>
 
          {/* Table View */}
@@ -647,27 +774,95 @@ export const Standardizer: React.FC = () => {
               <table className="w-full text-left border-collapse">
                 <thead className="bg-subtle sticky top-0 z-10">
                   <tr>
-                    <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-1/2">原始名称</th>
-                    <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-1/2">清洗后名称</th>
+                    <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-[40%]">原始名称</th>
+                    <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-[40%]">清洗后名称 <span className="text-tertiary font-normal">(点击编辑)</span></th>
                     <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-[80px]">来源</th>
+                    <th className="py-3 px-4 text-xs font-medium text-secondary uppercase tracking-wider border-b border-border w-[60px]">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {processedModels.length === 0 ? (
                       <tr>
-                          <td colSpan={3} className="py-8 text-center text-tertiary text-sm italic">
+                          <td colSpan={4} className="py-8 text-center text-tertiary text-sm italic">
                               请先在左侧添加数据源...
                           </td>
                       </tr>
                   ) : (
                       processedModels.map((row, idx) => (
-                        <tr key={idx} className="group hover:bg-subtle transition-colors">
-                          <td className="py-2.5 px-4 text-xs font-mono text-secondary break-all">{row.original}</td>
-                          <td className={`py-2.5 px-4 text-xs font-mono font-medium break-all ${
-                            row.original !== row.cleaned ? 'text-accent' : 'text-primary'
-                          }`}>
-                            {row.cleaned}
+                        <tr
+                          key={idx}
+                          className={`group transition-colors ${
+                            row.hasConflict
+                              ? 'bg-amber-50/50 hover:bg-amber-50'
+                              : 'hover:bg-subtle'
+                          }`}
+                        >
+                          {/* 原始名称列 */}
+                          <td className="py-2.5 px-4 text-xs font-mono text-secondary break-all">
+                            <div className="flex items-center gap-2">
+                              {row.hasConflict && (
+                                <svg className="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" title={`冲突: 与 ${row.conflictGroup?.join(', ')} 映射到相同名称`}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                </svg>
+                              )}
+                              <span className="break-all">{row.original}</span>
+                            </div>
+                            {row.hasConflict && row.conflictGroup && (
+                              <div className="text-[10px] text-amber-600 mt-1 pl-6">
+                                冲突: 与 {row.conflictGroup.slice(0, 2).join(', ')}{row.conflictGroup.length > 2 ? ` 等 ${row.conflictGroup.length} 个` : ''} 相同
+                              </div>
+                            )}
                           </td>
+
+                          {/* 清洗后名称列（可编辑）*/}
+                          <td className="py-2.5 px-4">
+                            {editingRow === row.original ? (
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={editingValue}
+                                  onChange={(e) => setEditingValue(e.target.value)}
+                                  onKeyDown={handleEditKeyDown}
+                                  autoFocus
+                                  className="flex-1 px-2 py-1 text-xs font-mono border border-accent rounded focus:outline-none focus:ring-1 focus:ring-accent"
+                                />
+                                <button
+                                  onClick={saveEditing}
+                                  className="p-1 text-green-600 hover:bg-green-50 rounded"
+                                  title="保存"
+                                >
+                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                </button>
+                                <button
+                                  onClick={cancelEditing}
+                                  className="p-1 text-gray-500 hover:bg-gray-100 rounded"
+                                  title="取消"
+                                >
+                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
+                            ) : (
+                              <div
+                                onClick={() => startEditing(row.original, row.cleaned)}
+                                className={`text-xs font-mono font-medium break-all cursor-pointer hover:bg-gray-100 px-2 py-1 -mx-2 -my-1 rounded transition-colors ${
+                                  row.matchSource === 'manual'
+                                    ? 'text-purple-600'
+                                    : row.original !== row.cleaned
+                                      ? 'text-accent'
+                                      : 'text-primary'
+                                }`}
+                                title="点击编辑"
+                              >
+                                {row.cleaned}
+                              </div>
+                            )}
+                          </td>
+
+                          {/* 来源标签列 */}
                           <td className="py-2.5 px-4 text-center">
                               {row.matchSource === 'smart' && (
                                   <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-100">
@@ -679,6 +874,41 @@ export const Standardizer: React.FC = () => {
                                       规则
                                   </span>
                               )}
+                              {row.matchSource === 'manual' && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-50 text-purple-700 border border-purple-100">
+                                      手动
+                                  </span>
+                              )}
+                              {row.matchSource === 'original' && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-50 text-gray-500 border border-gray-100">
+                                      原样
+                                  </span>
+                              )}
+                          </td>
+
+                          {/* 操作列 */}
+                          <td className="py-2.5 px-4 text-center">
+                            {row.matchSource === 'manual' ? (
+                              <button
+                                onClick={() => clearOverride(row.original)}
+                                className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                                title="撤销手动编辑"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                                </svg>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => startEditing(row.original, row.cleaned)}
+                                className="p-1 text-gray-400 hover:text-accent hover:bg-accent/10 rounded transition-colors opacity-0 group-hover:opacity-100"
+                                title="编辑"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))

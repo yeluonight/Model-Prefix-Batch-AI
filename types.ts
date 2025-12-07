@@ -20,5 +20,7 @@ export interface ProcessingRule {
 export interface ModelMapping {
   original: string;
   cleaned: string;
-  matchSource: 'smart' | 'rule' | 'original'; // 新增：标记匹配来源
+  matchSource: 'smart' | 'rule' | 'original' | 'manual'; // 标记匹配来源：智能匹配、规则处理、原样保留、手动编辑
+  hasConflict?: boolean; // 是否存在冲突（多个原始模型映射到同一个清洗后名称）
+  conflictGroup?: string[]; // 冲突组内的其他原始模型名称
 }
